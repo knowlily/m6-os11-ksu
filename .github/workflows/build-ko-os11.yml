@@ -1,0 +1,303 @@
+name: build-ko-os11
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_repo:
+        description: "KernelSU 源码仓库（决定 uapi 号）"
+        default: "Baka-SU/BakaSU"
+        required: true
+      ksu_ref:
+        description: "tag/branch：BakaSU v4.2.0-rc3=uapi4 / main=uapi5 / tiann v3.3.1=uapi5"
+        default: "v4.2.0-rc3"
+        required: true
+      ksu_debug:
+        description: "打开 CONFIG_KSU_DEBUG（ksud debug set-manager 可用 + 保留 kobject）"
+        type: boolean
+        default: true
+      target:
+        description: "内核档位（本仓库默认只跑 os11；m6 留给对照）"
+        default: "os11"
+        required: true
+      sublevel:
+        description: "可选覆盖：内核 SUBLEVEL（留空 = 用 targets.json，别再手填）"
+        default: ""
+        required: false
+      localversion:
+        description: "可选覆盖：LOCALVERSION（留空 = 用 targets.json）"
+        default: ""
+        required: false
+      source_url:
+        description: "厂商源码 zip 的下载地址（留空用仓库变量 HONOR_SRC_URL）"
+        default: ""
+        required: false
+      ksu_tarball:
+        description: "KSUSU 源码 tarball 地址（填了就绕过 setup.sh，直接解包到 KernelSU/）"
+        default: ""
+        required: false
+      ko_alias:
+        description: "产物 ko 的别名前缀（如 sukisu / finasu），留空则用原文件名"
+        default: ""
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 档位解析（唯一真源 = config/targets.json）─────────────────────────
+      # 以后加固件只改 targets.json，不用再记 sublevel/localversion/config 三件套。
+      - name: 解析目标档位
+        run: |
+          python3 tools/target.py resolve --target "${{ inputs.target }}" \
+            --sublevel "${{ inputs.sublevel }}" \
+            --localversion "${{ inputs.localversion }}" >> "$GITHUB_ENV"
+          echo "---- 本次目标 ----"
+          grep -E "^(TARGET|KERNEL_RELEASE|LOCALVERSION|SUBLEVEL|CONFIG_PATH)=" "$GITHUB_ENV"
+
+      - name: 依赖
+        run: |
+          # GitHub 的 runner 镜像偶尔会带一个坏掉的微软源（403 Forbidden），
+          # 会让 apt-get update 整个退出 100。删掉它 + 允许 update 失败。
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
+                     /etc/apt/sources.list.d/azure-cli*.list 2>/dev/null || true
+          sudo apt-get update -qq || echo "apt-get update 失败，继续（依赖多半已预装）"
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev zip unzip \
+            curl git python3 cpio rsync dwarves clang-17 lld-17 llvm-17 || true
+          # Ubuntu 只给带版本后缀的可执行文件，Kbuild 找的是无后缀名
+          for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump \
+                   llvm-readelf llvm-strip llvm-size llvm-as llvm-dis; do
+            src=$(command -v ${t}-17 || true)
+            [ -n "$src" ] && sudo ln -sf "$src" "/usr/local/bin/$t"
+          done
+          pahole --version || true
+          clang --version | head -2
+          ld.lld --version | head -1
+
+      - name: 缓存厂商源码
+        id: cache-src
+        uses: actions/cache@v4
+        with:
+          path: src.zip
+          key: honor-src-${{ inputs.target }}-v1
+
+      - name: 下载厂商源码
+        env:
+          SRC_URL_M6: ${{ vars.HONOR_SRC_URL }}
+          # os11 的源码地址单独一个仓库变量：两个固件的内核树不是同一份 zip
+          SRC_URL_OS11: ${{ vars.HONOR_SRC_URL_OS11 }}
+        run: |
+          if [ -s src.zip ]; then echo "已缓存"; ls -lh src.zip; exit 0; fi
+          if [ -n "${{ inputs.source_url }}" ]; then
+            SRC_URL="${{ inputs.source_url }}"
+          elif [ "$SOURCE_VAR" = "HONOR_SRC_URL_OS11" ]; then
+            SRC_URL="$SRC_URL_OS11"
+          else
+            SRC_URL="$SRC_URL_M6"
+          fi
+          if [ -z "${SRC_URL:-}" ]; then
+            echo "!! 没有源码地址：请在仓库 Settings → Variables 里配 $SOURCE_VAR"
+            exit 1
+          fi
+          curl -L --retry 3 --max-time 3000 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36" \
+            -H "Referer: https://www.honor.com/global/opensource/detail.html" \
+            -o src.zip "$SRC_URL"
+          ls -lh src.zip
+
+      - name: 解包内核树
+        run: |
+          unzip -o -q src.zip Code_Opensource.tar.gz
+          mkdir -p work
+          tar -xzf Code_Opensource.tar.gz -C work Code_Opensource/kernel
+          du -sh work/Code_Opensource/kernel
+          head -5 work/Code_Opensource/kernel/Makefile
+
+      - name: 对齐版本号（vermagic）
+        run: |
+          cd work/Code_Opensource/kernel
+          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = $SUBLEVEL/" Makefile
+          # 树不是 git 仓库 ⇒ setlocalversion 会追加 '+'，导致 vermagic 与 uname -r 差一个字符
+          # 而内核拒载。touch 一个空 .scmversion 即可让 setlocalversion 直接返回空。
+          touch .scmversion
+          grep -nE "^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)" Makefile
+
+      - name: 集成 KernelSU
+        env:
+          REF: ${{ inputs.ksu_ref }}
+          KREPO: ${{ inputs.ksu_repo }}
+          TARBALL: ${{ inputs.ksu_tarball }}
+        run: |
+          cd work/Code_Opensource/kernel
+          if [ -n "$TARBALL" ]; then
+            # 有些 fork 的 setup.sh 里 git clone 地址写死成上游仓库（FinaSU 就克隆了 tiann/KernelSU），
+            # 用它等于编错源码 ⇒ 直接下 tarball 自己集成。
+            echo "[fork] 直接下 tarball：$TARBALL"
+            rm -rf KernelSU && mkdir -p KernelSU
+            curl -L --retry 3 --max-time 600 -o /tmp/ksu_src.tgz "$TARBALL"
+            tar xzf /tmp/ksu_src.tgz -C KernelSU --strip-components=1
+            # ★ BakaSU 的 kernel/Kbuild 里有硬门禁：
+            #     LOCAL_GIT_EXISTS := test -e $(KSU_SRC)/../.git
+            #   不满足直接 $(error "use BakaSU as a git submodule")，编译必挂。
+            #   tarball 解出来没有 .git ⇒ 就地 init 一个（KSU_VERSION 还要 rev-list --count HEAD，
+            #   所以必须至少有一次提交；KSU_TAG_NAME 走 describe --tags，所以打个 tag）。
+            ( cd KernelSU \
+              && git init -q . \
+              && git add -A >/dev/null 2>&1 \
+              && git -c user.email=ci@localhost -c user.name=ci commit -qm "ci: tarball snapshot" \
+              && git tag -f v4.2.0 >/dev/null 2>&1 \
+              && echo "[fork] 已在 KernelSU/ 初始化 git（$(git rev-list --count HEAD) commit）" ) \
+              || echo "[fork] !! KernelSU/ git init 失败（BakaSU 可能在 Kbuild 处报错）"
+            ls KernelSU | head
+            grep -m1 KERNEL_SU_UAPI_VERSION KernelSU/uapi/supercall.h || true
+            # 手动做 setup.sh 的那三件事
+            ln -sfn ../KernelSU/kernel drivers/kernelsu
+            grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+            grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+            tail -3 drivers/Makefile; grep -n kernelsu drivers/Kconfig | head -3
+          else
+            curl -LSs "https://raw.githubusercontent.com/${KREPO}/${REF}/kernel/setup.sh" -o /tmp/ksu_setup.sh
+            bash /tmp/ksu_setup.sh "$REF"
+          fi
+          KD=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          echo "KSU 源码目录: ${KD:-（没找到）}"
+          [ -n "$KD" ] || { echo "!! setup.sh 没有产出源码目录"; exit 1; }
+          grep -rn "KERNEL_SU_UAPI_VERSION" "$KD"/uapi/supercall.h 2>/dev/null || true
+          head -20 "$KD"/kernel/Makefile
+
+      - name: 应用源码补丁
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          echo "KernelSU 源码目录: ${KSUDIR:-（没找到）}"
+          if [ -n "$KSUDIR" ] && [ -f "$GITHUB_WORKSPACE/patch/apply_sc_inject.py" ]; then
+            python3 "$GITHUB_WORKSPACE/patch/apply_sc_inject.py" "$KSUDIR" || true
+            echo "---- 注入结果自检 ----"
+            grep -n "ksu_sc_table_addr\|skip redirect" "$KSUDIR/kernel/hook/arm64/syscall_hook.c" | head -4 || true
+            grep -n "skip redirect" "$KSUDIR/kernel/hook/syscall_hook_manager.c" | head -2 || true
+            # 多管理器包名补丁：让一份 ko 同时认官方 / Next / BakaSU
+            if [ -f "$GITHUB_WORKSPACE/patch/apply_mgr_pkgs.py" ]; then
+              python3 "$GITHUB_WORKSPACE/patch/apply_mgr_pkgs.py" "$KSUDIR" || true
+              grep -n "ksu_mgr_pkgs\|mgr_dont_invalidate" "$KSUDIR"/kernel/manager/*throne*.c 2>/dev/null | head -4 || true
+              # 自检：KSU_PACKAGE_NAME 在 Next/BakaSU 里没有，补丁必须自带兜底定义，否则编译必挂
+              grep -n "ifndef KSU_PACKAGE_NAME" "$KSUDIR"/kernel/manager/*throne*.c 2>/dev/null | head -2 || echo "!! 缺少 KSU_PACKAGE_NAME 兜底定义"
+            fi
+          fi
+
+      - name: 配置
+        run: |
+          cd work/Code_Opensource/kernel
+          mkdir -p out
+          if [ -f "$GITHUB_WORKSPACE/$CONFIG_PATH" ]; then
+            echo "使用档位 config: $CONFIG_PATH"
+            cp "$GITHUB_WORKSPACE/$CONFIG_PATH" out/.config
+            echo "$LOCALVERSION" > /tmp/lv
+          else
+            echo "!! 没有 $CONFIG_PATH ⇒ 用 gki_defconfig（CRC 可能对不上）"
+            scripts/config --file arch/arm64/configs/gki_defconfig --set-str LOCALVERSION "$LOCALVERSION" || true
+            make -s O=out ARCH=arm64 LLVM=1 gki_defconfig
+          fi
+          # 保证 MODVERSIONS / 模块支持
+          ./scripts/config --file out/.config -e MODULES -e MODVERSIONS -e MODULE_UNLOAD || true
+          # KSU 默认 default y 会编进 vmlinux，我们要的是 .ko ⇒ 强制 =m
+          ./scripts/config --file out/.config -m KSU || true
+          if [ "${{ inputs.ksu_debug }}" = "true" ]; then
+            ./scripts/config --file out/.config -e KSU_DEBUG || true
+            echo "CONFIG_KSU_DEBUG=y"
+          else
+            ./scripts/config --file out/.config -d KSU_DEBUG || true
+          fi
+          # LOCALVERSION_AUTO=y 在没有 .git 时会乱加后缀，必须关掉，否则 vermagic 对不上
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO || true
+          # 设备 config 里 MODULE_SIG_ALL=y/MODULE_SIG_KEY=honor_signing_key.pem，我们没有这把私钥
+          # 只是个 ko，不需要签名（设备 sig_enforce 已被关掉）
+          ./scripts/config --file out/.config -d MODULE_SIG_ALL -d MODULE_SIG_FORCE -d MODULE_SIG || true
+          # 荣耀没把 fs/f2fs/hyper_prealloc.c 放出来（Makefile 却引用了它），源码里也没有任何调用点
+          if [ ! -f fs/f2fs/hyper_prealloc.c ]; then
+            echo "厂商树缺 fs/f2fs/hyper_prealloc.c ⇒ 关掉 CONFIG_F2FS_HYPER_PREALLOC"
+            ./scripts/config --file out/.config -d F2FS_HYPER_PREALLOC || true
+          fi
+          ./scripts/config --file out/.config --set-str LOCALVERSION "$LOCALVERSION" || true
+          make -s O=out ARCH=arm64 LLVM=1 olddefconfig
+          grep -E "CONFIG_(MODVERSIONS|MODULE_UNLOAD|LOCALVERSION|SMP|PREEMPT)" out/.config | head
+
+      - name: 编译（全量，产出 Module.symvers）
+        run: |
+          set -o pipefail
+          cd work/Code_Opensource/kernel
+          export KBUILD_BUILD_USER=build-user KBUILD_BUILD_HOST=build-host
+          # 设备内核不导出 path_umount/selinux_state 等符号 ⇒ 先让 modpost 只警告，拿到 ko
+          # 真正的办法是在模块里做 kallsyms 运行时解析（见 scripts/gen_shim.py）
+          export KBUILD_MODPOST_WARN=1
+          # 只编 vmlinux（跑完 built-in modpost，产出 Module.symvers）+ KSU 子目录。
+          # 不再编厂商 config 里那 62 个 =m 驱动：它们和内核模块毫无关系，纯浪费 20-40 分钟。
+          if ! make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 vmlinux > build.log 2>&1; then
+            echo "===== vmlinux 失败，最后 120 行 ====="
+            tail -120 build.log
+            echo "===== 错误摘要 ====="
+            grep -nE "error:|Error [0-9]|No rule|not found" build.log | head -40
+            exit 1
+          fi
+          if ! make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 drivers/kernelsu/ >> build.log 2>&1; then
+            echo "===== KSU 子目录失败，最后 120 行 ====="
+            tail -120 build.log
+            grep -nE "error:|Error [0-9]" build.log | head -40
+            exit 1
+          fi
+          if ! ls out/drivers/kernelsu/*.ko >/dev/null 2>&1; then
+            echo "!! 定向编译没出 ko，回退全量 make"
+            if ! make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 >> build.log 2>&1; then
+              tail -120 build.log; exit 1
+            fi
+          fi
+          tail -20 build.log
+          ls -l out/Module.symvers
+
+      - name: 收集 ko
+        run: |
+          mkdir -p artifacts
+          grep -E "^CONFIG_(KSU|KSU_DEBUG)" work/Code_Opensource/kernel/out/.config || echo "!! CONFIG_KSU 没进 .config"
+          ALIAS="${{ inputs.ko_alias }}"
+          for f in $(find work/Code_Opensource/kernel -name "kernelsu*.ko"); do
+            if [ -n "$ALIAS" ]; then
+              cp -v "$f" "artifacts/kernelsu_${ALIAS}${ARTIFACT_SUFFIX}.ko"
+            else
+              _b=$(basename "$f" .ko)
+              cp -v "$f" "artifacts/${_b}${ARTIFACT_SUFFIX}.ko"
+            fi
+          done
+          # 自校验：vermagic 必须与档位一致，否则这份产物根本装不上（内核逐字比对）
+          for f in artifacts/*.ko; do
+            python3 tools/target.py vermagic --target "$TARGET" --ko "$f" || {
+              echo "!! vermagic 不符，产物作废"; exit 1; }
+          done
+          ( cd artifacts && md5sum *.ko > md5sums.txt && cat md5sums.txt )
+          ls -l artifacts/
+          for f in artifacts/*.ko; do
+            echo "=== $f"
+            strings "$f" | grep -m3 -E "vermagic|^6\.1\.|uapi" || true
+            strings "$f" | grep -c "sucompat-kp" || true
+          done
+
+      - name: CRC 比对（设备真实符号表）
+        if: always()
+        run: |
+          for f in artifacts/*.ko; do
+            echo "=== $f"
+            python3 scripts/check_crc.py "$f" "$CRC_PATH" || echo "!! 有 CRC 不一致，见上"
+          done
+
+      - name: 上传 build.log（总是）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ inputs.ksu_ref }}
+          path: work/Code_Opensource/kernel/build.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ksu-ko-${{ inputs.ko_alias != '' && inputs.ko_alias || (inputs.ksu_repo == 'tiann/KernelSU' && 'upstream' || 'bakasu') }}${{ env.ARTIFACT_SUFFIX }}-${{ inputs.ksu_ref }}
+          path: artifacts/
