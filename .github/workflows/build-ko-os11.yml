@@ -15,6 +15,10 @@ on:
         description: "打开 CONFIG_KSU_DEBUG（ksud debug set-manager 可用 + 保留 kobject）"
         type: boolean
         default: true
+      no_modversions:
+        description: "关 CONFIG_MODVERSIONS（产物不带 __versions，走 ko_patch2 SHN_ABS 路线；与作者包 kernelsu_v325_os11.ko 同形状）"
+        type: boolean
+        default: true
       target:
         description: "内核档位（本仓库默认只跑 os11；m6 留给对照）"
         default: "os11"
@@ -220,6 +224,13 @@ jobs:
           # 设备 config 里 MODULE_SIG_ALL=y/MODULE_SIG_KEY=honor_signing_key.pem，我们没有这把私钥
           # 只是个 ko，不需要签名（设备 sig_enforce 已被关掉）
           ./scripts/config --file out/.config -d MODULE_SIG_ALL -d MODULE_SIG_FORCE -d MODULE_SIG || true
+          # os11 路线（作者包实测可装的那条）：不带 __versions，装载时由 ko_patch2 把
+          # UNDEF 符号写成 live kallsyms 的 SHN_ABS ⇒ 内核不做版本比对，CRC 门禁随之失效。
+          # 想回到「MODVERSIONS=y + CRC 门禁」就把它设成 false（前提：config/device-crc-os11.json 已有）。
+          if [ "${{ inputs.no_modversions }}" = "true" ]; then
+            ./scripts/config --file out/.config -d MODVERSIONS || true
+            echo "MODVERSIONS=n（产物无 __versions，与作者 v325 os11 ko 同形状）"
+          fi
           # 荣耀没把 fs/f2fs/hyper_prealloc.c 放出来（Makefile 却引用了它），源码里也没有任何调用点
           if [ ! -f fs/f2fs/hyper_prealloc.c ]; then
             echo "厂商树缺 fs/f2fs/hyper_prealloc.c ⇒ 关掉 CONFIG_F2FS_HYPER_PREALLOC"
@@ -278,6 +289,9 @@ jobs:
           for f in artifacts/*.ko; do
             python3 tools/target.py vermagic --target "$TARGET" --ko "$f" || {
               echo "!! vermagic 不符，产物作废"; exit 1; }
+          done
+          for f in artifacts/*.ko; do
+            python3 -c "import sys;sys.path.insert(0,'scripts');from check_crc import crc_pairs;print('  __versions 条目: %d  (%s)' % (len(crc_pairs('$f')), '$f'))"
           done
           ( cd artifacts && md5sum *.ko > md5sums.txt && cat md5sums.txt )
           ls -l artifacts/

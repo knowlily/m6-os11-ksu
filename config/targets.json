@@ -21,10 +21,11 @@
     "localversion": "-android14-11-g84ffa64b710b",
     "config": "config/device-os11.config",
     "config_fallback": "config/device.config",
-    "crc": "config/device_crc.json",
+    "crc": "config/device-crc-os11.json",
     "source_var": "HONOR_SRC_URL_OS11",
     "source_hint": "荣耀开源中心 → MagicOS11.0.0.110 对应 Bvlgari 源码包（版本号必须与设备 uname -r 对得上）",
     "artifact_suffix": "_os11",
-    "payload_dir": "payload/os11"
+    "payload_dir": "payload/os11",
+    "crc_note": "由 scripts/pull_device_truth.sh 从 os11 设备抓 vendor ko 的 __versions 生成；暂无时 CRC 检查只作参考"
   }
 }

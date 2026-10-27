@@ -92,3 +92,30 @@ tools/ci_ko.py pull/status            产物回灌到 payload/os11
 
 - `m6-bvlgari-ksu`：MagicOS 10 档，公开、有历史记录、产物已被真机验证。
 - **本仓库**：MagicOS 11 档，独立演进；流程变了也优先在这边试，稳了再回灌那边。
+
+## os11 没有设备时的两条路（照 os10 的经验）
+
+os10（`m6-bvlgari-ksu`）的做法是「设备在手」路线：`adb pull /vendor/lib/modules/*.ko` →
+扫 `__versions` 生成 `config/device_crc.json` → CI 里 `check_crc.py` 当门禁；`.config` 也是
+`/proc/config.gz` 抓的。**os11 目前没设备**，于是有第二条：
+
+| 路线 | 产物形状 | 门禁 | 适用 |
+|---|---|---|---|
+| A 有设备 | `__versions` 有 180 条左右（`MODVERSIONS=y`） | vermagic + **CRC 逐符号比对** | 有 os11 机器时首选 |
+| B 无设备 | `__versions` **size=0**（`MODVERSIONS=n`） | vermagic + 装载时 `ko_patch2` 把 UNDEF 写成 live kallsyms 的 `SHN_ABS`（内核不做版本比对） | 现在；作者包 `kernelsu_v325_os11.ko` 就是这个形状，实测能装 |
+
+B 的实测依据：作者包那份 ko 的 `__versions` 段是 **size=0**（`MODVERSIONS=n` 编的），
+配上 `ko_patch2 $KO /proc/kallsyms` 照样在 110 内核上 Live —— 说明这条路不依赖 CRC。
+workflow 的 `no_modversions` 输入（默认 **true**）就是产出 B 形状。
+
+有设备后补基准（一条命令）：
+
+```bash
+bash scripts/pull_device_truth.sh          # 抓 config + vendor ko → 生成两份 os11 基准
+git add -A && git commit -m "config: 从设备抓 os11 的 config + CRC 基准" && git push
+```
+
+之后把 `no_modversions` 设回 false，就能用 A 路线的 CRC 门禁。
+
+`scripts/build_crc_baseline.py` 可以从任意「已知能在目标内核装载」的 ko 反推基准表
+（多份会互相比对，冲突就报错），设备不在手边时也能用别人给的 ko 建表。
