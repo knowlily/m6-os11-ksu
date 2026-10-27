@@ -94,6 +94,12 @@ jobs:
             SRC_URL="${{ inputs.source_url }}"
           elif [ "$SOURCE_VAR" = "HONOR_SRC_URL_OS11" ]; then
             SRC_URL="$SRC_URL_OS11"
+            # 没配 11 的源码包时退回 10 的树（SUBLEVEL/localversion 仍按 os11 改，
+            # vermagic 能对上；但结构体 CRC 可能不同，装上一验就知道）
+            if [ -z "${SRC_URL:-}" ]; then
+              echo "!! HONOR_SRC_URL_OS11 未配置 ⇒ 退回 HONOR_SRC_URL（MagicOS10 的 6.1.128 树）"
+              SRC_URL="$SRC_URL_M6"
+            fi
           else
             SRC_URL="$SRC_URL_M6"
           fi
