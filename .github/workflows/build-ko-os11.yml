@@ -236,7 +236,12 @@ jobs:
             echo "厂商树缺 fs/f2fs/hyper_prealloc.c ⇒ 关掉 CONFIG_F2FS_HYPER_PREALLOC"
             ./scripts/config --file out/.config -d F2FS_HYPER_PREALLOC || true
           fi
-          ./scripts/config --file out/.config --set-str LOCALVERSION "$LOCALVERSION" || true
+          # ★ vermagic 只能有一个来源：setlocalversion 是
+          #     res="${config_localversion}${LOCALVERSION}"
+          #   ⇒ .config 的 CONFIG_LOCALVERSION 和环境变量 LOCALVERSION 会**拼接**。
+          #   两边都给同一个串会得到 "...-g84ffa64b710b-android14-11-g84ffa64b710b"，
+          #   内核逐字比对直接拒载。这里把 .config 那份清空，只留环境变量。
+          ./scripts/config --file out/.config --set-str LOCALVERSION "" || true
           make -s O=out ARCH=arm64 LLVM=1 olddefconfig
           grep -E "CONFIG_(MODVERSIONS|MODULE_UNLOAD|LOCALVERSION|SMP|PREEMPT)" out/.config | head
 
@@ -306,7 +311,11 @@ jobs:
         run: |
           for f in artifacts/*.ko; do
             echo "=== $f"
-            python3 scripts/check_crc.py "$f" "$CRC_PATH" || echo "!! 有 CRC 不一致，见上"
+            if [ -s "$CRC_PATH" ]; then
+              python3 scripts/check_crc.py "$f" "$CRC_PATH" || echo "!! 有 CRC 不一致，见上"
+            else
+              echo "  （$CRC_PATH 还没有 ⇒ 跳过 CRC 比对；拿到 os11 设备/基准后补）"
+            fi
           done
 
       - name: 上传 build.log（总是）
