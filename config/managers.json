@@ -68,8 +68,9 @@
     "repo": "Baka-SU/BakaSU",
     "ref": "main",
     "tarball": true,
-    "uapi": 5,
+    "uapi": 6,
     "manager": "com.bakasu.bakasu",
-    "note": "历史最稳的兜底"
+    "note": "历史最稳的兜底",
+    "uapi_note": "CI 实测：BakaSU main 的 uapi/supercall.h 里 KERNEL_SU_UAPI_VERSION = 6"
   }
 }
