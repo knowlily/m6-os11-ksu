@@ -63,7 +63,12 @@ cd ../m6-shell && bash tools/build_apk.sh release   # sync 自动跑，末尾逐
 
 ## 已知缺口
 
-1. **`config/device_crc.json` 现在是 MagicOS 10 那份**（436 个厂商 ko 的 `__versions` 基准）。
+1. **CRC 基准在这台机上拿不到**（2026-10-28 实测，见 `docs/device-truth-os11-20261028.md`）：
+   `/vendor_dlkm/lib/modules` 那 436 个 ko **全部是 DSP 内核（6.1.57-gbfe3896ae95e / maybe-dirty）编的**，
+   与主内核 6.1.157 无关，`match_main_kernel = 0`。不是权限问题，是数据不存在 ⇒ A 路线在 os11 上不成立，
+   **B 路线（BEE：开着 MODVERSIONS 编、编完清空 `__versions`、装载时 SHN_ABS）是唯一路线**。
+
+   历史备注（os10 的做法）：`config/device_crc.json` 是当时从 m6 设备 436 个厂商 ko 的 `__versions` 扫出来的。
    要在 os11 机器上导一份：`adb pull /vendor/lib/modules/*.ko` → 跑 `scripts/check_crc.py --build-baseline`
    （或称手写个小脚本扫 `.ko` 的 `__versions`），另存为 `config/device-crc-os11.json`。
    在那之前 CRC 检查只能当"参考"，不能当门禁。

@@ -1,0 +1,74 @@
+{
+  "_source": "2026-10-28 只读采集（不 remount、不写系统分区）",
+  "device": {
+    "model": "BVL-AN16 (HONOR Magic6 Pro)",
+    "serial": "ACPR024524000114",
+    "fingerprint": "HONOR/BVL-AN16/HNBVL:17/HONORBVL-AN16/11DLDLD110SP6C00E110:user/release-keys",
+    "android": "17 / MagicOS 11.0.0.110 (11DLDLD110SP6C00E110)",
+    "kernel_release": "6.1.157-android14-11-g84ffa64b710b",
+    "kernel_build": "Thu Oct 8 09:23:50 UTC 2026  build-user@build-host  clang 17.0.2 / LLD 17.0.2",
+    "vermagic_full": "6.1.157-android14-11-g84ffa64b710b SMP preempt mod_unload modversions aarch64"
+  },
+  "config": {
+    "lines": 2327,
+    "MODVERSIONS": true,
+    "MODULE_SIG_FORCE": true,
+    "CFI_CLANG": true,
+    "LTO_NONE": true,
+    "ARCH_WANTS_DYNAMIC_TASK_STRUCT": true,
+    "GKI_TASK_STRUCT_VENDOR_SIZE_MAX": 1024
+  },
+  "kallsyms": {
+    "lines": 429835,
+    "unique_symbols": 220840,
+    "kptr_restrict": 0,
+    "image_base_static": "0xffffffc008000000",
+    "text_runtime": "0xffffffe0f3a00000",
+    "kaslr_slide": "0x20eba00000"
+  },
+  "payload_symtab_check": {
+    "symbols": 233,
+    "offset_mismatch": 0,
+    "absent_from_kallsyms": [
+      "commit_creds"
+    ],
+    "note": "233 条静态地址与实机 kallsyms 的 _text 偏移逐条一致；commit_creds 只在 __ksymtab_commit_creds 里，没有独立文本符号"
+  },
+  "vendor_modules": {
+    "count": 436,
+    "dir": "/vendor_dlkm/lib/modules (/vendor/lib/modules 是软链)",
+    "vermagic_6_1_57_gbfe3896ae95e": 348,
+    "vermagic_6_1_57_maybe_dirty": 88,
+    "match_main_kernel": 0,
+    "conclusion": "全部是 DSP/ADSP 内核(6.1.57)编的，对主内核(6.1.157)的 CRC 基准毫无用处 ⇒ 设备侧拿不到 CRC 真值"
+  },
+  "ci_ko_symbol_coverage": {
+    "ko": "kernelsu_finasu121_os11.ko (CI 首版)",
+    "undef": 240,
+    "missing_in_kallsyms": [
+      "commit_creds"
+    ],
+    "author_ko_undef": 206,
+    "author_ko_missing": [
+      "commit_creds"
+    ],
+    "note": "两个 ko 缺的完全相同；commit_creds 由内核导出表在装载时解析"
+  },
+  "root_state": {
+    "su": "uid=0 context=u:r:ksu:s0",
+    "loaded": [
+      {
+        "name": "kernelsu",
+        "size": 212992,
+        "addr": "0xffffffe0f3625000"
+      },
+      {
+        "name": "gl3root_kb",
+        "size": 16384,
+        "addr": "0xffffffe0f162a000"
+      }
+    ],
+    "device_payload_dir": "/data/local/tmp/route/m6/ (kernelsu-v325-kprobe-sucompat.ko 368544B, auto_load_v325.sh, ko_patch.log)",
+    "ko_patch_result": "206 UNDEF → 205 SHN_ABS；commit_creds 留 UND（和我们的判断一致）"
+  }
+}

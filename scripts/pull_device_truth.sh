@@ -85,8 +85,33 @@ if [ "$N" -lt 5 ]; then
   exit 4
 fi
 
+# ★ 先把「不是主内核编的 ko」剔掉：Honor 的 /vendor_dlkm/lib/modules 里绝大多数是 DSP/ADSP
+#   内核（例：6.1.57-gbfe3896ae95e）编的，混进去会污染基准表。
+KEEP="$TMPD/main_kernel_ko"; mkdir -p "$KEEP"
+python3 - "$TMPD/modules" "$KEEP" "$REL" <<'PY'
+import glob, os, shutil, sys
+src, dst, rel = sys.argv[1], sys.argv[2], sys.argv[3]
+def vm(p):
+    b = open(p, "rb").read(); i = b.find(b"vermagic=")
+    if i < 0: return ""
+    t = b[i + 9:i + 9 + 200]; out = []
+    for ch in t:
+        if ch in (0, 10, 13): break
+        out.append(chr(ch))
+    return "".join(out)
+keep = 0
+for p in glob.glob(os.path.join(src, "*.ko")):
+    if vm(p).startswith(rel):
+        shutil.copy2(p, dst); keep += 1
+print(f"  与主内核 {rel} 匹配的 ko: {keep} 个")
+if keep == 0:
+    print("  !! 一个都没匹配上 ⇒ 这台机的厂商 ko 是别的内核编的（Honor 常见：DSP 6.1.57），")
+    print("     CRC 基准拿不到；走 B 路线（编完清空 __versions 段）即可。")
+PY
+[ -n "$(ls -1 "$KEEP" 2>/dev/null)" ] || { echo "CRC 基准跳过（没有主内核编的厂商 ko）"; echo "只抓到了 config，已足够"; exit 0; }
+
 echo "=== 3. 建 CRC 基准表"
-python3 scripts/build_crc_baseline.py config/device-crc-os11.json "$TMPD"/modules/*.ko \
+python3 scripts/build_crc_baseline.py config/device-crc-os11.json "$KEEP"/*.ko \
   --label "device $MODEL $REL ($FINGER)" || exit 5
 
 echo
