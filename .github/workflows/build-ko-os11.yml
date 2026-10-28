@@ -224,13 +224,10 @@ jobs:
           # 设备 config 里 MODULE_SIG_ALL=y/MODULE_SIG_KEY=honor_signing_key.pem，我们没有这把私钥
           # 只是个 ko，不需要签名（设备 sig_enforce 已被关掉）
           ./scripts/config --file out/.config -d MODULE_SIG_ALL -d MODULE_SIG_FORCE -d MODULE_SIG || true
-          # os11 路线（作者包实测可装的那条）：不带 __versions，装载时由 ko_patch2 把
-          # UNDEF 符号写成 live kallsyms 的 SHN_ABS ⇒ 内核不做版本比对，CRC 门禁随之失效。
-          # 想回到「MODVERSIONS=y + CRC 门禁」就把它设成 false（前提：config/device-crc-os11.json 已有）。
-          if [ "${{ inputs.no_modversions }}" = "true" ]; then
-            ./scripts/config --file out/.config -d MODVERSIONS || true
-            echo "MODVERSIONS=n（产物无 __versions，与作者 v325 os11 ko 同形状）"
-          fi
+          # ★ 绝不能 -d MODVERSIONS：vermagic 的 `modversions` token 由它决定，设备内核
+          #   （MODVERSIONS=y）比对整串，少了这个 token 直接拒载。
+          #   要「无版本表」的产物就在编完之后清空 __versions 段（下一步 strip_versions.py）。
+          grep -E "^CONFIG_MODVERSIONS" out/.config || { echo "!! CONFIG_MODVERSIONS 丢了，vermagic 会少 token"; exit 1; }
           # 荣耀没把 fs/f2fs/hyper_prealloc.c 放出来（Makefile 却引用了它），源码里也没有任何调用点
           if [ ! -f fs/f2fs/hyper_prealloc.c ]; then
             echo "厂商树缺 fs/f2fs/hyper_prealloc.c ⇒ 关掉 CONFIG_F2FS_HYPER_PREALLOC"
@@ -282,6 +279,9 @@ jobs:
           mkdir -p artifacts
           grep -E "^CONFIG_(KSU|KSU_DEBUG)" work/Code_Opensource/kernel/out/.config || echo "!! CONFIG_KSU 没进 .config"
           ALIAS="${{ inputs.ko_alias }}"
+          if [ "${{ inputs.no_modversions }}" = "true" ]; then
+            echo "→ 清空 __versions 段（B 路线：vermagic 保留 modversions token，但内核遍历到 0 条版本）"
+          fi
           for f in $(find work/Code_Opensource/kernel -name "kernelsu*.ko"); do
             if [ -n "$ALIAS" ]; then
               cp -v "$f" "artifacts/kernelsu_${ALIAS}${ARTIFACT_SUFFIX}.ko"
@@ -290,7 +290,10 @@ jobs:
               cp -v "$f" "artifacts/${_b}${ARTIFACT_SUFFIX}.ko"
             fi
           done
-          # 自校验：vermagic 必须与档位一致，否则这份产物根本装不上（内核逐字比对）
+          if [ "${{ inputs.no_modversions }}" = "true" ]; then
+            python3 scripts/strip_versions.py artifacts/*.ko
+          fi
+          # 自校验：vermagic 必须与档位一致（整串，含 modversions/SMP/preempt 这些 token）
           for f in artifacts/*.ko; do
             python3 tools/target.py vermagic --target "$TARGET" --ko "$f" || {
               echo "!! vermagic 不符，产物作废"; exit 1; }

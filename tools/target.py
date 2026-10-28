@@ -93,20 +93,45 @@ def ko_vermagic(path: str) -> str:
     return "".join(out).split(" ")[0]
 
 
+def ko_vermagic_full(path: str) -> str:
+    """整串 vermagic（含 SMP/preempt/mod_unload/modversions/aarch64 这些 token）。
+
+    内核比对的是整串：`modversions` 由构建内核的 CONFIG_MODVERSIONS 决定，
+    少了它即便版本号一致也会被拒载。
+    """
+    with open(path, "rb") as f:
+        blob = f.read()
+    key = b"vermagic="
+    i = blob.find(key)
+    if i < 0:
+        return ""
+    tail = blob[i + len(key):i + len(key) + 200]
+    out = []
+    for ch in tail:
+        if ch in (0, 10, 13):
+            break
+        out.append(chr(ch))
+    return "".join(out)
+
+
 def cmd_vermagic(args) -> int:
     t = get_target(args.target)
     if not os.path.exists(args.ko):
         print(f"!! 找不到 ko：{args.ko}")
         return 2
-    got = ko_vermagic(args.ko)
-    want = t["kernel_release"]
+    got_full = ko_vermagic_full(args.ko)
+    got = got_full.split(" ")[0]
+    want_full = t.get("vermagic_full") or t["kernel_release"]
+    want = want_full.split(" ")[0]
     size = os.path.getsize(args.ko)
-    if got == want:
-        print(f"OK  {os.path.basename(args.ko)}  {size}B  vermagic={got}")
+    if got_full == want_full:
+        print(f"OK  {os.path.basename(args.ko)}  {size}B  vermagic={got_full}")
         return 0
     print(f"FAIL {os.path.basename(args.ko)}  {size}B")
-    print(f"     want {want}")
-    print(f"     got  {got or '<读不到>'}")
+    print(f"     want {want_full}")
+    print(f"     got  {got_full or '<读不到>'}")
+    if got == want:
+        print("     版本号对得上，差在 flag token（多半是 CONFIG_MODVERSIONS / MODULE_UNLOAD）")
     print(f"     ⇒ 这份 ko 不是 {t['label']} 档的，装载会被内核拒（vermagic 逐字比对）")
     return 1
 

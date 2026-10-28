@@ -11,7 +11,8 @@
     "source_var": "HONOR_SRC_URL",
     "source_hint": "荣耀开源中心 → Bvlgari_MagicOS10.0_Code_Opensource",
     "artifact_suffix": "",
-    "payload_dir": "payload"
+    "payload_dir": "payload",
+    "vermagic_full": "6.1.157-android14-11-g7d3922fade43 SMP preempt mod_unload modversions aarch64"
   },
   "os11": {
     "label": "MagicOS 11 / 0.0.110",
@@ -26,6 +27,8 @@
     "source_hint": "荣耀开源中心 → MagicOS11.0.0.110 对应 Bvlgari 源码包（版本号必须与设备 uname -r 对得上）",
     "artifact_suffix": "_os11",
     "payload_dir": "payload/os11",
-    "crc_note": "由 scripts/pull_device_truth.sh 从 os11 设备抓 vendor ko 的 __versions 生成；暂无时 CRC 检查只作参考"
+    "crc_note": "由 scripts/pull_device_truth.sh 从 os11 设备抓 vendor ko 的 __versions 生成；暂无时 CRC 检查只作参考",
+    "vermagic_full": "6.1.157-android14-11-g84ffa64b710b SMP preempt mod_unload modversions aarch64",
+    "vermagic_note": "整串取自作者包 kernelsu_v325_os11.ko（110 实测可装）：modversions token 必须保留，靠清空 __versions 段绕过 CRC"
   }
 }
