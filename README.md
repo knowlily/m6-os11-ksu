@@ -110,6 +110,9 @@ done
 
 uapi6 的三家编的时候会自动跑 `patch/apply_sc_inject.py`（配置里 `sc_inject: true`）。
 
+
+> 📚 通用件（编 ko / 装载 / 管理器 / KASLR / 排障）已抽到 `m6-os11-exploit/reuse/`，本仓库只放本仓库特有的部分。
+
 ## 已知缺口
 
 1. **CRC 基准在这台机上拿不到**（2026-10-28 实测，见 `docs/device-truth-os11-20261028.md`）：
