@@ -27,7 +27,10 @@ AAPT2="D:/Android/Sdk/build-tools/35.0.0/aapt2.exe" \
    按 `4.2.0` 去对 tag 会对不上。
 2. **KernelSU-Next 的包名被伪装**成 `kqvdie.zeykvw.hpbcyd`，ksud 里编译期常量仍是
    `com.rifsxd.ksunext`。寄存器认包名时必须传**伪装后的**那个，否则永远认不出。
-3. **SukiSU 没有 libksud**（4.x 起管理器直接走内核接口，uapi 是 dex 常量，
+3. **BakaSU 的 tag 与 APK 不是一回事**：`v4.2.0-rc3` 这个 tag 是 **uapi4**，
+   APK 里那份是 `d5e9e025`（tag + 81 commits，uapi6）。按 tag 编出来的 ko 配 APK 会 mismatch。
+   识别办法：APK 的 libksud 版本串是 `4.2.0-rc3-81-gd5e9e025 (uapi: 6)`。
+4. **SukiSU 没有 libksud**（4.x 起管理器直接走内核接口，uapi 是 dex 常量，
    `libwnhshomyqcv.so` 只有 15 KB 的 JNI 壳）⇒ 没法从 APK 静态读 uapi，
    只能装载后看管理器自报的 `kernelUAPIVersion` / `managerUAPIVersion`。
 

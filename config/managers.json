@@ -71,7 +71,7 @@
     "tarball": true,
     "uapi": 6,
     "manager": "com.resukisu.resukisu",
-    "note": "= APK 35252；加冕靠签名扫描，装载后跑不起来，实验",
+    "note": "= APK v4.2.0-rc3 / vc 35252。⚠ 用 commit d5e9e025，别用 tag v4.2.0-rc3：tag 是 uapi4，d5e9e025(=tag+81 commits) 才是 uapi6，而 APK 的 ksud 串正是 4.2.0-rc3-81-gd5e9e025 (uapi: 6)",
     "apk_vc": 35252,
     "apk_file": "BakaSU_v4.2.0-rc3.apk",
     "sc_inject": true
