@@ -1,12 +1,14 @@
 {
-  "_comment": "管理器 ↔ ko 对照表。一份 ko 只配一个管理器的 uapi，别混用。tarball=true 表示必须用 ksu_tarball 绕开上游 setup.sh（fork 的 setup.sh 常写死 tiann/KernelSU）。",
+  "_comment": "管理器 ↔ ko 对照表。一份 ko 只配一个管理器的 uapi，别混用。tarball=true 表示必须用 ksu_tarball 绕开上游 setup.sh（fork 的 setup.sh 常写死 tiann/KernelSU）。sc_inject=true 表示该 uapi6 档编 ko 时必须跑 patch/apply_sc_inject.py。apk_vc/apk_file 指桌面上那份 APK（C:/Users/<user>/Desktop/apks），用来核对「编译配置 ↔ 实际安装的管理器」是否同一版；用 scripts/check_manager_apk.py 自动比对。",
   "ksu331": {
     "repo": "tiann/KernelSU",
     "ref": "v3.3.1",
     "tarball": false,
     "uapi": 5,
     "manager": "me.weishu.kernelsu",
-    "note": "官方 3.3.1"
+    "note": "官方 3.3.1",
+    "apk_vc": 32680,
+    "apk_file": "KernelSU_v3.3.1.apk"
   },
   "next": {
     "repo": "KernelSU-Next/KernelSU-Next",
@@ -14,7 +16,9 @@
     "tarball": true,
     "uapi": 5,
     "manager": "kqvdie.zeykvw.hpbcyd",
-    "note": "包名被伪装"
+    "note": "包名被伪装",
+    "apk_vc": 33355,
+    "apk_file": "KernelSU-Next_v3.4.2-spoofed.apk"
   },
   "sukisu": {
     "repo": "SukiSU-Ultra/SukiSU-Ultra",
@@ -22,7 +26,8 @@
     "tarball": true,
     "uapi": 6,
     "manager": "com.sukisu.ultra",
-    "note": "默认给 SukiSU；发行版包名会随机"
+    "note": "默认给 SukiSU；发行版包名会随机",
+    "sc_inject": true
   },
   "suki421": {
     "repo": "SukiSU-Ultra/SukiSU-Ultra",
@@ -30,7 +35,8 @@
     "tarball": true,
     "uapi": 6,
     "manager": "com.sukisu.ultra",
-    "note": "实验：r2 多 avc_spoof.c，本机装载后管理器查不到内核，默认用 r1"
+    "note": "实验：r2 多 avc_spoof.c，本机装载后管理器查不到内核，默认用 r1",
+    "sc_inject": true
   },
   "finasu121": {
     "repo": "LyraVoid/FinaSU",
@@ -38,7 +44,8 @@
     "tarball": true,
     "uapi": 6,
     "manager": "me.yuki.fina",
-    "note": "默认给 FinaSU"
+    "note": "默认给 FinaSU",
+    "sc_inject": true
   },
   "finasu110": {
     "repo": "LyraVoid/FinaSU",
@@ -46,7 +53,8 @@
     "tarball": true,
     "uapi": 6,
     "manager": "me.yuki.fina",
-    "note": "带 mount_view_filter 空判 + trylock 修复"
+    "note": "带 mount_view_filter 空判 + trylock 修复",
+    "sc_inject": true
   },
   "finasu": {
     "repo": "LyraVoid/FinaSU",
@@ -54,7 +62,8 @@
     "tarball": true,
     "uapi": 6,
     "manager": "me.yuki.fina",
-    "note": "无 mount_view_filter，最保守"
+    "note": "无 mount_view_filter，最保守",
+    "sc_inject": true
   },
   "basu420": {
     "repo": "Baka-SU/BakaSU",
@@ -62,7 +71,10 @@
     "tarball": true,
     "uapi": 6,
     "manager": "com.resukisu.resukisu",
-    "note": "= APK 35252；加冕靠签名扫描，装载后跑不起来，实验"
+    "note": "= APK 35252；加冕靠签名扫描，装载后跑不起来，实验",
+    "apk_vc": 35252,
+    "apk_file": "BakaSU_v4.2.0-rc3.apk",
+    "sc_inject": true
   },
   "custom": {
     "repo": "Baka-SU/BakaSU",
@@ -71,6 +83,29 @@
     "uapi": 6,
     "manager": "com.bakasu.bakasu",
     "note": "历史最稳的兜底",
-    "uapi_note": "CI 实测：BakaSU main 的 uapi/supercall.h 里 KERNEL_SU_UAPI_VERSION = 6"
+    "uapi_note": "CI 实测：BakaSU main 的 uapi/supercall.h 里 KERNEL_SU_UAPI_VERSION = 6",
+    "sc_inject": true
+  },
+  "finasu130": {
+    "repo": "LyraVoid/FinaSU",
+    "ref": "v1.3.0",
+    "tarball": true,
+    "uapi": 6,
+    "manager": "me.yuki.fina",
+    "note": "= APK 33082；比 finasu121 高一个小版本",
+    "apk_vc": 33082,
+    "apk_file": "FinaSU_v1.3.0.apk",
+    "sc_inject": true
+  },
+  "sukisu430": {
+    "repo": "SukiSU-Ultra/SukiSU-Ultra",
+    "ref": "v4.3.0",
+    "tarball": true,
+    "uapi": 6,
+    "manager": "com.sukisu.ultra",
+    "note": "= APK 41100；管理器无 libksud（uapi 走 dex 常量 getKernelUAPIVersion），装载后靠管理器自报",
+    "apk_vc": 41100,
+    "apk_file": "SukiSU_v4.3.0.apk",
+    "sc_inject": true
   }
 }

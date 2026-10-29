@@ -61,6 +61,36 @@ cd ../m6-shell && bash tools/build_apk.sh release   # sync 自动跑，末尾逐
 2. `__versions` CRC 与 `config/device-crc-os11.json` 一致（**这份还没抓到**，见下）；
 3. `strings kernelsu_*.ko | grep sucompat` 有输出（kprobe 后端补丁生效）。
 
+## 管理器适配（五份 APK 已核对，见 `docs/managers-compat-20261029.md`）
+
+桌面 `apks/` 下五份管理器的**精确代际**已实测入库：
+
+| APK | 包名 | vc | uapi | config |
+|---|---|---|---|---|
+| KernelSU_v3.3.1 | `me.weishu.kernelsu` | 32680 | 5 | `ksu331` |
+| KernelSU-Next_v3.4.2-spoofed | `kqvdie.zeykvw.hpbcyd` | 33355 | 5 | `next` |
+| BakaSU_v4.2.0-rc3 | `com.resukisu.resukisu` | 35252 | 6 | `basu420` |
+| FinaSU_v1.3.0 | `me.yuki.fina` | 33082 | 6 | `finasu130` |
+| SukiSU_v4.3.0 | `com.sukisu.ultra` | 41100 | 6（推定） | `sukisu430` |
+
+```bash
+# 核对任意一批 APK 是否和仓库配置同一代
+AAPT2="D:/Android/Sdk/build-tools/35.0.0/aapt2.exe" \
+  python scripts/check_manager_apk.py "C:/Users/<user>/Desktop/apks" --strict
+
+# 只要这五份的构建 job
+python tools/target.py matrix --targets os11 --managers ksu331,next,basu420,finasu130,sukisu430
+```
+
+两份 v325 时代的 ko（含一键越狱包里那份）只能配 uapi 5 的两家；
+uapi 6 的三家必须自编，且编的时候要带 `patch/apply_sc_inject.py`（配置里 `sc_inject: true`）。
+
+一份 ko 想同时认多个管理器，装载时传：
+
+```
+mgr_pkgs=me.weishu.kernelsu,kqvdie.zeykvw.hpbcyd,com.resukisu.resukisu,me.yuki.fina,com.sukisu.ultra
+```
+
 ## 已知缺口
 
 1. **CRC 基准在这台机上拿不到**（2026-10-28 实测，见 `docs/device-truth-os11-20261028.md`）：
@@ -82,13 +112,14 @@ cd ../m6-shell && bash tools/build_apk.sh release   # sync 自动跑，末尾逐
 ```
 .github/workflows/build-ko-os11.yml   CI（照抄 m6-bvlgari-ksu，target 默认 os11）
 config/targets.json                   档位表（唯一真源：localversion / sublevel / config / source_var）
-config/managers.json                  管理器 ↔ 上游仓库/tag/uapi
+config/managers.json                  管理器 ↔ 上游仓库/tag/uapi/apk 版本号
 config/device.config                  m6 的厂商 config（os11 的待抓）
 config/device_crc.json                m6 的 CRC 基准（os11 的待导出）
 patch/apply_sc_inject.py              uapi6 的 sc_table 注入补丁
 patch/apply_mgr_pkgs.py               多管理器包名补丁
 scripts/check_crc.py                  __versions CRC 比对
 scripts/gen_shim.py                   缺失符号的 kallsyms 运行时解析垫片
+scripts/check_manager_apk.py          离线核对「桌面 APK ↔ managers.json」，--strict 可当门禁
 tools/target.py resolve/vermagic/matrix
 tools/ci_ko.py pull/status            产物回灌到 payload/os11
 ```
