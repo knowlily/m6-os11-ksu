@@ -1,5 +1,5 @@
 {
-  "_comment": "管理器 ↔ ko 对照表。一份 ko 只配一个管理器的 uapi，别混用。tarball=true 表示必须用 ksu_tarball 绕开上游 setup.sh（fork 的 setup.sh 常写死 tiann/KernelSU）。sc_inject=true 表示该 uapi6 档编 ko 时必须跑 patch/apply_sc_inject.py。apk_vc/apk_file 指桌面上那份 APK（C:/Users/<user>/Desktop/apks），用来核对「编译配置 ↔ 实际安装的管理器」是否同一版；用 scripts/check_manager_apk.py 自动比对。",
+  "_comment": "管理器 ↔ ko 对照表。**一个管理器一份 ko**（uapi 必须同代，跨代必报 mismatch），不靠 mgr_pkgs 共用一份。uapi 全部按源码 uapi/supercall.h 里的 KERNEL_SU_UAPI_VERSION 实测：v3.2.5=2 / v3.3.1=5 / Next3.4.2=5 / BakaSU d5e9e025=6 / FinaSU v1.3.0=6 / SukiSU v4.3.0=6。tarball=true 表示用 tarball 绕开上游 setup.sh（fork 常写死 tiann/KernelSU）。sc_inject=true 表示编该 uapi6 档时必须跑 patch/apply_sc_inject.py。apk_vc/apk_file 指桌面上那份 APK，用 scripts/check_manager_apk.py 自动比对。",
   "ksu331": {
     "repo": "tiann/KernelSU",
     "ref": "v3.3.1",
@@ -83,7 +83,6 @@
     "uapi": 6,
     "manager": "com.bakasu.bakasu",
     "note": "历史最稳的兜底",
-    "uapi_note": "CI 实测：BakaSU main 的 uapi/supercall.h 里 KERNEL_SU_UAPI_VERSION = 6",
     "sc_inject": true
   },
   "finasu130": {
@@ -107,5 +106,16 @@
     "apk_vc": 41100,
     "apk_file": "SukiSU_v4.3.0.apk",
     "sc_inject": true
+  },
+  "ksu325": {
+    "repo": "tiann/KernelSU",
+    "ref": "v3.2.5",
+    "tarball": false,
+    "uapi": 2,
+    "manager": "me.weishu.kernelsu",
+    "note": "= 一键越狱包/kit 自带那份内核侧。uapi2 只配 KernelSU 3.2.5 自带管理器；配 3.3.1/Next(5) 或任何 uapi6 管理器都会 UAPI mismatch ⇒ 不作兜底",
+    "apk_vc": 32525,
+    "apk_file": "（kit 内置 assets/manager/KernelSU-v325.apk）",
+    "deprecated": true
   }
 }

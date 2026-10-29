@@ -82,14 +82,33 @@ AAPT2="D:/Android/Sdk/build-tools/35.0.0/aapt2.exe" \
 python tools/target.py matrix --targets os11 --managers ksu331,next,basu420,finasu130,sukisu430
 ```
 
-两份 v325 时代的 ko（含一键越狱包里那份）只能配 uapi 5 的两家；
-uapi 6 的三家必须自编，且编的时候要带 `patch/apply_sc_inject.py`（配置里 `sc_inject: true`）。
-
-一份 ko 想同时认多个管理器，装载时传：
+**一个管理器一份 ko**（uapi 是内核态 ABI，跨代必报 `UAPI version mismatch`）。
+uapi 全部按源码 `uapi/supercall.h` 的 `KERNEL_SU_UAPI_VERSION` 核实：
 
 ```
-mgr_pkgs=me.weishu.kernelsu,kqvdie.zeykvw.hpbcyd,com.resukisu.resukisu,me.yuki.fina,com.sukisu.ultra
+tiann/KernelSU v3.2.5        → 2   ← 一键越狱包/kit 自带那份，只配它自带的 3.2.5 管理器
+tiann/KernelSU v3.3.1        → 5
+KernelSU-Next v3.4.2         → 5
+BakaSU d5e9e025 (4.2.0-rc3)  → 6
+FinaSU v1.3.0                → 6
+SukiSU v4.3.0                → 6
 ```
+
+所以五份 APK 对应五次编译：
+
+```bash
+for m in "tiann/KernelSU v3.3.1 ksu331" "KernelSU-Next/KernelSU-Next v3.4.2 next" \
+         "Baka-SU/BakaSU d5e9e025 basu420" "LyraVoid/FinaSU v1.3.0 finasu130" \
+         "SukiSU-Ultra/SukiSU-Ultra v4.3.0 sukisu430"; do
+  set -- $m
+  gh workflow run build-ko-os11.yml -R knowlily/m6-os11-ksu -f target=os11 \
+     -f ksu_repo=$1 -f ksu_ref=$2 -f ko_alias=$3 \
+     -f ksu_tarball="https://github.com/$1/archive/$2.tar.gz"
+  sleep 2
+done
+```
+
+uapi6 的三家编的时候会自动跑 `patch/apply_sc_inject.py`（配置里 `sc_inject: true`）。
 
 ## 已知缺口
 

@@ -16,7 +16,7 @@ AAPT2="D:/Android/Sdk/build-tools/35.0.0/aapt2.exe" \
 | `KernelSU-Next_v3.4.2-spoofed.apk` | `kqvdie.zeykvw.hpbcyd` | 33355 | `3.4.2 (uapi: 5)` | **5** | `next` |
 | `BakaSU_v4.2.0-rc3.apk` | `com.resukisu.resukisu` | 35252 | `4.2.0-rc3-81-gd5e9e025 (uapi: 6)` | **6** | `basu420` |
 | `FinaSU_v1.3.0.apk` | `me.yuki.fina` | 33082 | `1.3.0 (uapi: 6)` | **6** | `finasu130`（本次新增） |
-| `SukiSU_v4.3.0.apk` | `com.sukisu.ultra` | 41100 | 无 libksud（uapi 是 dex 常量） | 6（推定） | `sukisu430`（本次新增） |
+| `SukiSU_v4.3.0.apk` | `com.sukisu.ultra` | 41100 | 无 libksud（uapi 是 dex 常量） | **6**（源码已确认） `sukisu430`（本次新增） |
 
 五条全部 `OK`（包名 / vc / uapi 与 managers.json 一致）。
 
@@ -31,17 +31,43 @@ AAPT2="D:/Android/Sdk/build-tools/35.0.0/aapt2.exe" \
    `libwnhshomyqcv.so` 只有 15 KB 的 JNI 壳）⇒ 没法从 APK 静态读 uapi，
    只能装载后看管理器自报的 `kernelUAPIVersion` / `managerUAPIVersion`。
 
-## 二、uapi 分代决定用哪条构建链
+## 二、uapi 按源码核实（不按 tag 猜）
 
-一份 ko 只认一个 uapi，跨代必报 `UAPI version mismatch: kernel=…`。
+`KERNEL_SU_UAPI_VERSION` 一律从各仓库 `uapi/supercall.h` 读：
 
-| uapi | 管理器 | 构建配置 | 备注 |
-|---|---|---|---|
-| 5 | 官方 3.3.1、KSU-Next 3.4.2 | `ksu331` / `next` | 也能用 `Magic6_OS11_110_一键越狱` 包里那份 `kernelsu-v325-kprobe-sucompat.ko`（v325 源码，同属 3.x 线，推定 uapi 5；上机用 `ksud debug get-kernel-info` 或管理器设置页对一遍） |
-| 6 | BakaSU 4.2.0-rc3、FinaSU 1.3.0、SukiSU 4.3.0 | `basu420` / `finasu130` / `sukisu430` | 必须自编，且要带 `patch/apply_sc_inject.py`（uapi6 的 sc_table 注入） |
+```bash
+gh api "repos/<repo>/contents/uapi/supercall.h?ref=<ref>" -H "Accept: application/vnd.github.raw" \
+  | grep -m1 KERNEL_SU_UAPI_VERSION
+```
 
-**推论**：v325 那份 ko 只能服务官方 3.3.1 和 KSU-Next 3.4.2。
-要用 BakaSU / FinaSU / SukiSU，就得在本仓库按对应档编 ko —— 这是「适配新版管理器」的实质内容。
+| 源 | uapi | 说明 |
+|---|---|---|
+| `tiann/KernelSU v3.2.5` | **2** | 一键越狱包/kit 自带那份 ko 的内核侧 |
+| `tiann/KernelSU v3.3.1` | 5 | 官方现版 |
+| `KernelSU-Next v3.4.2` | 5 | 伪装包名那家 |
+| `BakaSU d5e9e025` | 6 | APK v4.2.0-rc3 |
+| `FinaSU v1.3.0` | 6 | |
+| `SukiSU v4.3.0` | 6 | 之前只能推定，现已确认 |
+
+**一条要纠正的旧判断**：v325 那份 ko 是 **uapi 2**，不是 5。
+所以它**只能**配 KernelSU 3.2.5 自带管理器；装 3.3.1 / KSU-Next（uapi 5）或任何 uapi6 管理器，
+都会报 `UAPI version mismatch: kernel=…`，症状是「模块 Live 但管理器连不上、su 不给权」。
+uapi2 的构建参数表也老（只有 `allow_shell` / `norc`），不要拿它当「更稳的兜底」。
+
+### 一个管理器一份 ko
+
+跨代不能混，也不建议用一份 ko 认多个包名来「省编译」：uapi 是内核态 ABI，
+五个管理器分三代（2 / 5 / 6），一份 ko 只能落在一代上。所以矩阵是
+
+| 管理器 | 要编的 ko | 档位 |
+|---|---|---|
+| KernelSU 3.3.1 | `kernelsu_ksu331_os11.ko` | `ksu331` |
+| KernelSU-Next 3.4.2 | `kernelsu_next_os11.ko` | `next` |
+| BakaSU 4.2.0-rc3 | `kernelsu_basu420_os11.ko` | `basu420` |
+| FinaSU 1.3.0 | `kernelsu_finasu130_os11.ko` | `finasu130` |
+| SukiSU 4.3.0 | `kernelsu_sukisu430_os11.ko` | `sukisu430` |
+
+（`ksu325` 只作历史对照，标记 `deprecated`，不进装机包。）
 
 ## 三、管理器注册方式（各家不一样，不能一套脚本硬套）
 
@@ -53,16 +79,13 @@ AAPT2="D:/Android/Sdk/build-tools/35.0.0/aapt2.exe" \
 | FinaSU 1.3.0 | `set-apk` / `set-uid` / `set-hash` + `grant` | 无需 debug | 管理器 APK 的 v2 签名（`GrantAuthorize`） |
 | SukiSU 4.3.0 | 管理器自己写（无 ksud） | — | 只要内核认包名 |
 
-**共同兜底**：`ksud debug set-manager` 失败时走 `packages.list` 加冕（写 uid 后恢复权限），
-或者让 ko 侧直接认包名 —— 这也是 `patch/apply_mgr_pkgs.py` 存在的理由：
+**兜底顺序**（每份 ko 只认自己那个管理器）：先管理器自带的注册路径；不行再
+`ksud debug set-manager <APK>`（需 `CONFIG_KSU_DEBUG`，本仓库 workflow 的 `ksu_debug` 默认 true）；
+再不行 `packages.list` 加冕。**不要**用一份 ko 认五个包名来省事 —— uapi 是内核态 ABI，
+五个管理器分三代（2/5/6），一份 ko 只能落一代。
 
-```
-mgr_pkgs=me.weishu.kernelsu,kqvdie.zeykvw.hpbcyd,com.resukisu.resukisu,me.yuki.fina,com.sukisu.ultra
-```
-
-一份 ko 认全部五个包名，装载时按书写顺序优先加冕（真机踩过：设备上同时装着 BakaSU 和官方时，
-原生 `track_throne()` 会按 `packages.list` 遍历顺序挑到错的那个，
-`Crowning manager: uid=10512` 而用户实际用的是 uid 11207 ⇒ 管理器所有 ioctl 全被 deny）。
+每份 ko 里编译期 `KSU_PACKAGE_NAME` 也各自对应自己的管理器包名（`patch/apply_mgr_pkgs.py`
+只用于临时把某个包名补进去，不是主路径）。
 
 ## 四、本次改动
 
@@ -91,10 +114,22 @@ mgr_pkgs=me.weishu.kernelsu,kqvdie.zeykvw.hpbcyd,com.resukisu.resukisu,me.yuki.f
 
 ## 六、与 OS11 提权链的衔接
 
-`m6-os11-exploit` 的 P6（KSU 装载）目前用的是 1.1.3 包里那份 v325 ko ⇒ **只能配官方 3.3.1 / KSU-Next 3.4.2**。
+`m6-os11-exploit` 的 P6（KSU 装载）现在用的是 1.1.3 包里那份 v325 ko —— 它是 **uapi 2**，
+只能配 KernelSU 3.2.5 自带管理器（kit 的 `assets/manager/KernelSU-v325.apk`）。
+换成设备上现装的 3.3.1 / SukiSU / FinaSU 全部会 mismatch。
 
-若要落到 BakaSU / FinaSU / SukiSU，需要：
-1. 在本仓库按 `basu420` / `finasu130` / `sukisu430` 各编一份 uapi6 ko（B 路线 + `sc_inject` + 多管理器包名补丁）
-2. 用 `tools/target.py vermagic` 校验 vermagic 整串（含 `modversions` token）
-3. 装载时带 `mgr_pkgs=…`（见上）+ `allow_shell=1`（调试期）
+所以 P6 改成「**编一份与已装管理器同代的 ko**」：
+
+| 设备上装的是 | 编哪份 | 装载参数 |
+|---|---|---|
+| 官方 3.3.1 | `kernelsu_ksu331_os11.ko`（uapi5） | `allow_shell=1`（调试期） |
+| KSU-Next 3.4.2 | `kernelsu_next_os11.ko`（uapi5） | 同上 + 伪装包名 |
+| BakaSU 4.2.0-rc3 | `kernelsu_basu420_os11.ko`（uapi6） | 同上 |
+| FinaSU 1.3.0 | `kernelsu_finasu130_os11.ko`（uapi6） | 同上 |
+| SukiSU 4.3.0 | `kernelsu_sukisu430_os11.ko`（uapi6） | 同上 |
+
+步骤：
+1. 在本仓库按对应档编 ko（B 路线：开着 MODVERSIONS 编、编完清 `__versions`；uapi6 还要 `sc_inject`）
+2. `tools/target.py vermagic --target os11 --ko <产物>` 校验整串（含 `modversions` token）
+3. 装载 `insmod <ko> <参数>`，判据 `/proc/modules` 里 `kernelsu … Live` + `/dev/ksu` 存在
 4. 回到 `m6-os11-exploit` 的 P7 逐家验
