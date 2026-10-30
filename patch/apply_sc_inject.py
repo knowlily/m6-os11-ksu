@@ -313,6 +313,18 @@ static int ksu_bprm_begin_pre(struct kprobe *p, struct pt_regs *regs)
     struct linux_binprm *bprm = (struct linux_binprm *)regs->regs[0];
     struct cred *c;
 
+    /* 2026-10-30 诊断：证明「begin_new_exec 这个 kprobe 到底有没有被调用」。
+     * rc=0 只说明注册成功，不等于内核真的走到这个函数（可能被内联/走了别的 exec 路径）。 */
+    {
+        static int _bprm_dbg;
+        if (_bprm_dbg < 8) {
+            _bprm_dbg++;
+            pr_alert("ksu-dbg BPRM pid=%d comm=%s fn=%s su_pid=%d cred=%d\\n",
+                     current->pid, current->comm,
+                     (bprm && bprm->filename) ? bprm->filename : "?",
+                     ksu_su_pid, ksu_su_cred);
+        }
+    }
     if (!ksu_su_cred)
         return 0;
     /* 2026-10-30：这份构建的 sucompat 走 sys_enter tracepoint，它可能先就把
@@ -358,6 +370,13 @@ static int ksu_bprm_begin_pre(struct kprobe *p, struct pt_regs *regs)
 
 static struct kprobe ksu_bprm_begin_kp = {
     .symbol_name = "begin_new_exec",
+    .pre_handler = ksu_bprm_begin_pre,
+};
+
+/* 2026-10-30：begin_new_exec 若被内联（厂商树常见），kprobe 注册成 rc=0 也不会被调用。
+ * exec_binprm(bprm) 是同一路径上更早、且几乎不会被内联的一跳，用同一个 handler 兜住。 */
+static struct kprobe ksu_bprm_exec_kp = {
+    .symbol_name = "exec_binprm",
     .pre_handler = ksu_bprm_begin_pre,
 };
 
@@ -517,6 +536,10 @@ void ksu_sp_hooks_init(void)
     rc2 = register_kprobe(&ksu_su_exec_kp);
     rc3 = register_kprobe(&ksu_exec_entry_kp);
     rc4 = register_kprobe(&ksu_bprm_begin_kp);
+    {
+        int rc5 = register_kprobe(&ksu_bprm_exec_kp);
+        pr_alert("ksu: exec_binprm kprobe rc=%d\\n", rc5);
+    }
     pr_alert("ksu: su-exec kprobe rc=%d path=%s\\n", rc2, ksu_su_path ? ksu_su_path : "(null)");
     pr_alert("ksu: exec-entry rc=%d begin_new_exec rc=%d su_cred=%d\\n", rc3, rc4, ksu_su_cred);
     {
