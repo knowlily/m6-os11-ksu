@@ -46,7 +46,7 @@ def patch_hook(root):
 extern int set_memory_rw(unsigned long addr, int numpages);
 extern int set_memory_ro(unsigned long addr, int numpages);
 extern int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid);
-static void ksu_sp_hooks_init(void);
+void ksu_sp_hooks_init(void);
 
 syscall_fn_t *ksu_syscall_table = NULL;""", 1)
         hit += 1
@@ -315,8 +315,18 @@ static int ksu_bprm_begin_pre(struct kprobe *p, struct pt_regs *regs)
 
     if (!ksu_su_cred)
         return 0;
-    if (!ksu_su_owned_by_current())
-        return 0;
+    /* 2026-10-30：这份构建的 sucompat 走 sys_enter tracepoint，它可能先就把
+     * 文件名换成了落点路径 —— 此时 kprobe① 看到的已经不是 /system/bin/su，
+     * ksu_su_pid 永远不会被置位。所以再加一道「按落点路径认领」：
+     * 只要这次 exec 的目标就是我们的 su 落点，且 uid 有资格，就换 cred。 */
+    if (!ksu_su_owned_by_current()) {
+        if (!ksu_su_path || !ksu_su_path[0] || !bprm || !bprm->filename)
+            return 0;
+        if (strcmp(bprm->filename, ksu_su_path))
+            return 0;
+        if ((current_uid().val != 0) && !__ksu_is_allow_uid_for_current(current_uid().val))
+            return 0;
+    }
     if (ksu_su_cred == 2) {
         struct ksu_su_tw *tw = kmalloc(sizeof(*tw), GFP_ATOMIC);
         if (!tw)
@@ -491,10 +501,17 @@ static struct kprobe ksu_su_check_kps[] = {
     {.symbol_name = "vfs_statx",              .pre_handler = ksu_su_check_pre},
 };
 
-static void ksu_sp_hooks_init(void)
+void ksu_sp_hooks_init(void)
 {
-    int rc = register_kprobe(&ksu_sp_setresuid_kp);
-    int rc2, rc3, rc4;
+    /* 2026-10-30：两处调用点（init.c 无条件 + 分发器成功分支）都会进来，
+     * 必须幂等，否则第二次 register_kprobe 全部返回 -EEXIST 且日志看着像失败。 */
+    static bool ksu_sp_inited;
+    int rc, rc2, rc3, rc4;
+
+    if (ksu_sp_inited)
+        return;
+    ksu_sp_inited = true;
+    rc = register_kprobe(&ksu_sp_setresuid_kp);
 
     pr_alert("ksu: setresuid kprobe rc=%d\\n", rc);
     rc2 = register_kprobe(&ksu_su_exec_kp);
@@ -523,6 +540,28 @@ static void ksu_sp_hooks_init(void)
         return "skip: anchors not found"
     save(p, s, crlf)
     return "patched(%d)" % hit
+
+
+def patch_init(root):
+    """把 ksu_sp_hooks_init() 挂到 kernelsu_init() 里无条件执行。
+    原来的调用点在 syscall_hook.c 的「dispatcher installed」分支里 ——
+    这份构建走 sys_enter tracepoint，分发器可能压根没装，于是 kprobe 从不注册。"""
+    p = os.path.join(root, "kernel/core/init.c")
+    if not os.path.exists(p):
+        return "skip: no file"
+    s, crlf = load(p)
+    if "ksu_sp_hooks_init();" in s:
+        return "already"
+    if "int __init kernelsu_init(void)" not in s:
+        return "skip: anchor not found"
+    s = s.replace("int __init kernelsu_init(void)",
+                  "extern void ksu_sp_hooks_init(void);\n\nint __init kernelsu_init(void)", 1)
+    old = "    ksu_syscall_hook_init();\n"
+    if old not in s:
+        return "skip: call anchor not found"
+    s = s.replace(old, old + "    ksu_sp_hooks_init();\n", 1)
+    save(p, s, crlf)
+    return "patched"
 
 
 def patch_mgr(root):
@@ -574,4 +613,5 @@ if __name__ == "__main__":
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     print("[sc-inject] hook :", patch_hook(root))
     print("[sc-inject] mgr  :", patch_mgr(root))
+    print("[sc-inject] init :", patch_init(root))
     sys.exit(0)
