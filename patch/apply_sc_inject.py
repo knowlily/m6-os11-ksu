@@ -227,6 +227,8 @@ static void ksu_su_tw_fn(struct callback_head *head)
     kfree(tw);
 }\n/* 步骤②默认开，可 su_cred=0 关掉做 A/B。原来还有个 kretprobe 往 cred->security+4\n * 盲写 SID=kernel —— 那是对 SELinux 私有结构体的野写，已删除。 */\nstatic int ksu_su_cred = 1;\nmodule_param_named(su_cred, ksu_su_cred, int, 0644);
 
+extern struct cred *ksu_cred;
+
 static int ksu_su_exec_pre(struct kprobe *p, struct pt_regs *regs)
 {
     struct filename *fn = (struct filename *)regs->regs[1];
@@ -262,6 +264,19 @@ static int ksu_su_exec_pre(struct kprobe *p, struct pt_regs *regs)
     memcpy((char *)fn->name, ksu_su_path, strlen(ksu_su_path) + 1);
     ksu_su_pid = current->pid;
     pr_alert("ksu: su-redirect uid=%d %s -> %s\\n", current_uid().val, n, ksu_su_path);
+    /* ★ 2026-10-30：分发器在这台机器上装不上 —— sys_call_table 只读，
+     *   写入返回 0 但 readback 仍是 ni_syscall（"dispatcher installed at slot 42
+     *   readback=...c088c want=...3088"）。上游 filp_open+execveat 那条路要求
+     *   分发器真的生效，所以永远走不到；只能在①里补上缺的那一步：
+     *   把当前进程的 creds 直接切成 ksu_cred（root + kernel 域）。
+     *   override_creds() 只做引用计数和指针替换，不分配、不睡眠，kprobe 的原子
+     *   上下文里安全。切到 kernel 域之后，open_exec(ksu_su_path) 的 SELinux 检查
+     *   是以 kernel 域身份做的 —— 之前把 untrusted_app 挡下来的那条规则不再适用。 */
+    {
+        const struct cred *old_cred = override_creds(ksu_cred);
+        (void)old_cred;   /* 故意不还原：exec 之后这个进程就该是 root */
+        pr_alert("ksu: su-escape creds->ksu pid=%d comm=%s\\n", current->pid, current->comm);
+    }
     return 0;
 }
 
