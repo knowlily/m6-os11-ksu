@@ -581,26 +581,47 @@ void ksu_sp_hooks_init(void)
 
 
 def patch_init(root):
-    """把 ksu_sp_hooks_init() 挂到 kernelsu_init() 里无条件执行。
+    """把 ksu_sp_hooks_init() 挂到 kernelsu_init() 末尾。
     原来的调用点在 syscall_hook.c 的「dispatcher installed」分支里 ——
-    这份构建走 sys_enter tracepoint，分发器可能压根没装，于是 kprobe 从不注册。"""
+    这份构建走 sys_enter tracepoint，分发器可能压根没装，于是 kprobe 从不注册。
+
+    两个坑（BakaSU d5e9e025 实测）：
+      1. 声明不能放文件里某个 #if 块内（会随条件编译消失）⇒ 用块作用域 extern，写在调用点前面；
+      2. 各家 init.c 结构不同，别按 ksu_syscall_hook_init() 找锚点（可能出现在别处）⇒
+         直接大括号配对找到 kernelsu_init 的函数体末尾，插在收尾前，最安全。"""
+    NL = chr(10)
     p = os.path.join(root, "kernel/core/init.c")
     if not os.path.exists(p):
         return "skip: no file"
     s, crlf = load(p)
     if "ksu_sp_hooks_init();" in s:
         return "already"
-    if "int __init kernelsu_init(void)" not in s:
+    anchor = "int __init kernelsu_init(void)"
+    if anchor not in s:
         return "skip: anchor not found"
-    s = s.replace("int __init kernelsu_init(void)",
-                  "extern void ksu_sp_hooks_init(void);\n\nint __init kernelsu_init(void)", 1)
-    old = "    ksu_syscall_hook_init();\n"
-    if old not in s:
-        return "skip: call anchor not found"
-    s = s.replace(old, old + "    ksu_sp_hooks_init();\n", 1)
+
+    idx = s.index(anchor)
+    brace = s.find("{", idx)
+    if brace < 0:
+        return "skip: no body"
+    depth = 0
+    end = -1
+    for i in range(brace, len(s)):
+        c = s[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end < 0:
+        return "skip: body not closed"
+
+    call = "    extern void ksu_sp_hooks_init(void);" + NL + "    ksu_sp_hooks_init();" + NL
+    s = s[:end] + call + s[end:]
     save(p, s, crlf)
     return "patched"
-
 
 def patch_mgr(root):
     p = os.path.join(root, "kernel/hook/syscall_hook_manager.c")
