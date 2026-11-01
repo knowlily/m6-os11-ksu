@@ -50,7 +50,7 @@ BLOCK_NEW = """    if (!bprm || !bprm->cred)
      * 进程变成 uid0+untrusted_app，ksud 一跑就把系统拖死（实测卡死重启）。
      * 换成 init 时预分配的 kernel cred：指针替换 + 引用计数，不分配、不 sleep。 */
     if (ksu_root_cred) {
-        struct cred *newc = get_cred(ksu_root_cred);
+        struct cred *newc = (struct cred *)get_cred(ksu_root_cred);   /* 6.1 的 get_cred 返回 const */
 
         put_cred(bprm->cred);
         bprm->cred = newc;
