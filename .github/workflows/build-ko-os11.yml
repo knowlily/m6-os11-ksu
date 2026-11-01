@@ -212,6 +212,9 @@ jobs:
           python3 "$GITHUB_WORKSPACE/patch/apply_su_rootcred.py" "$KSUDIR"
           echo "---- rootcred 自检 ----"
           grep -n "init_cred\|ksu_root_cred" "$HOOK" | head -4
+          python3 "$GITHUB_WORKSPACE/patch/apply_su_execwrap.py" "$KSUDIR"
+          echo "---- execwrap 自检 ----"
+          grep -n "ksu_execwrap_kp\|__ksu_disabled" "$HOOK" | head -6
 
       - name: su 诊断补丁
         run: |
