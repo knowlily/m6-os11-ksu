@@ -117,5 +117,16 @@
     "apk_vc": 32525,
     "apk_file": "（kit 内置 assets/manager/KernelSU-v325.apk）",
     "deprecated": true
+  },
+  "finasu142": {
+    "repo": "LyraVoid/FinaSU",
+    "ref": "v1.4.2",
+    "tarball": true,
+    "uapi": 6,
+    "manager": "me.yuki.fina",
+    "note": "= 桌面 FinaSU_v1.4.2.apk（vc 33155）",
+    "apk_vc": 33155,
+    "apk_file": "FinaSU_v1.4.2.apk",
+    "sc_inject": true
   }
 }
