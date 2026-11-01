@@ -196,6 +196,20 @@ jobs:
             fi
           fi
 
+      - name: su creds 修复
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          HOOK="$KSUDIR/kernel/hook/arm64/syscall_hook.c"
+          if [ ! -f "$HOOK" ]; then
+            echo "!! $HOOK 不存在，跳过"
+            exit 0
+          fi
+          python3 "$GITHUB_WORKSPACE/patch/apply_su_cred_fix.py" "$KSUDIR"
+          echo "---- creds 修复自检 ----"
+          grep -n "ksu_su_saved_cred\|register_kretprobe" "$HOOK" | head -4
+
       - name: su 诊断补丁
         run: |
           cd work/Code_Opensource/kernel
