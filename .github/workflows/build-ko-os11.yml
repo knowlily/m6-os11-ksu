@@ -229,7 +229,10 @@ jobs:
             echo "!! $SRC 不存在（该版本没有 feature/sucompat.c），跳过"
             exit 0
           fi
-          python3 "$GITHUB_WORKSPACE/patch/apply_su_diag2.py" "$KSUDIR"
+          python3 "$GITHUB_WORKSPACE/patch/apply_su_diag2.py" "$KSUDIR" || {
+            echo "!! su_diag2 跳过：该分支的 sucompat.c 没有 allow-check 锚点（诊断补丁可选，不影响产物）"
+            exit 0
+          }
           echo "---- su_diag 自检 ----"
           grep -n "ksu_su_diag\|su_force_allow\|KSU_SU_DIAG_PATH" "$SRC" | head -8
 
