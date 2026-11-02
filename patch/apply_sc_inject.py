@@ -173,7 +173,6 @@ module_param_named(kimg_voff, ksu_kimg_voff_addr, ulong, 0644);""", 1)
     #   ⇒ isManager=false ⇒ ksuVersion=null ⇒ 首页显示「未安装」。
     if "ksu_sp_setresuid_kp" not in s:
         s = s.rstrip() + '''
-        _c_string_guard(s)
 
 /* 2026-10-21: setresuid kprobe —— sys_call_table dispatcher 在本机不可用
  * （fixmap 写不进去 / set_memory_rw=-22），改用 kprobe 走同一条业务逻辑。
@@ -666,6 +665,7 @@ void ksu_sp_hooks_init(void)
 }
 '''
         s = s.rstrip() + "\n"
+        _c_string_guard(s)
         # 我们的块必须落在 __aarch64__ 守卫内：把原来的 #endif 挪到文件尾
         if "#endif /* __aarch64__ */" in s:
             s = s.replace("#endif /* __aarch64__ */", "", 1)
