@@ -643,18 +643,6 @@ void ksu_sp_hooks_init(void)
         return;
     ksu_sp_inited = true;
 
-    /* 收尾：exploit 为了装未签名 ko 把 sig_enforce 清成 N，装载成功后写回 1。
-     * 不能写 sysfs（那个参数是 0444），只能直接改内核全局量；符号由离线 patcher 解析。 */
-    {
-        extern bool sig_enforce;
-        if (sig_enforce)
-            pr_alert("ksu: sig_enforce already 1\\n");
-        else {
-            sig_enforce = true;
-            pr_alert("ksu: sig_enforce restored to 1\\n");
-        }
-    }
-
     rc = register_kprobe(&ksu_sp_setresuid_kp);
 
     pr_alert("ksu: setresuid kprobe rc=%d\\n", rc);
