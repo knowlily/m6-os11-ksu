@@ -267,14 +267,11 @@ static const struct ksu_sp_feature_handler ksu_sp_sucompat_h = {
 
 void __init ksu_sp_register_sucompat(void)   /* 非 static：init.c 要跨文件调 */
 {
-    extern int ksu_register_feature_handler(const struct ksu_sp_feature_handler *)
-        __attribute__((weak));
-    int _rc;
-    if (!ksu_register_feature_handler) {
-        pr_alert("ksu: no ksu_register_feature_handler\\n");
-        return;
-    }
-    _rc = ksu_register_feature_handler(&ksu_sp_sucompat_h);
+    /* 绝不能加 __attribute__((weak))：弱符号取地址会生成 R_AARCH64_ADR_GOT_PAGE
+     * (type 311)，本机内核模块加载器不支持 GOT 重定位 → errno=8 ENOEXEC
+     * （2026-11-02 实测 load_ko rc=4，dmesg: unsupported RELA relocation: 311）。*/
+    extern int ksu_register_feature_handler(const struct ksu_sp_feature_handler *);
+    int _rc = ksu_register_feature_handler(&ksu_sp_sucompat_h);
     pr_alert("ksu: sucompat register rc=%d\\n", _rc);
 }
 static char *ksu_su_path;
