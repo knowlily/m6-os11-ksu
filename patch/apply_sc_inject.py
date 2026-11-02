@@ -648,8 +648,21 @@ def patch_init(root):
     if end < 0:
         return "skip: body not closed"
 
-    call = "    extern void ksu_sp_hooks_init(void);" + NL + "    ksu_sp_hooks_init();" + NL
-    s = s[:end] + call + s[end:]
+    # ★ 2026-11-02 关键坑：函数体末尾是 "return 0;" —— 把调用插在右大括号前
+    # 等于插在 return 之后，编译器当死代码，ksu_sp_hooks_init() 永远不执行，
+    # 我们所有 kprobe（setresuid 装 fd、execve 重定向…）一个都没注册上。
+    # 正确做法：插在**最后一个 return 之前**。
+    body = s[brace:end]
+    rel = body.rfind("return")
+    if rel < 0:
+        ins = end
+    else:
+        # 回退到该 return 所在行的行首
+        line_start = s.rfind(NL, brace, brace + rel)
+        ins = line_start + 1 if line_start >= 0 else brace + rel
+    call = ("    extern void ksu_sp_hooks_init(void);" + NL
+            + "    ksu_sp_hooks_init();" + NL)
+    s = s[:ins] + call + s[ins:]
     save(p, s, crlf)
     return "patched"
 
