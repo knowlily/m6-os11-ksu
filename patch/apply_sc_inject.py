@@ -158,6 +158,7 @@ module_param_named(kimg_voff, ksu_kimg_voff_addr, ulong, 0644);""", 1)
  * （fixmap 写不进去 / set_memory_rw=-22），改用 kprobe 走同一条业务逻辑。
  * 管理器进程拿到 [ksu_driver] fd 全靠这里。 */
 #include <linux/kprobes.h>
+#include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/fs.h>
@@ -168,18 +169,47 @@ module_param_named(kimg_voff, ksu_kimg_voff_addr, ulong, 0644);""", 1)
 #include <linux/cred.h>
 #include <linux/sched.h>
 
-extern int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid);
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+
+/* 2026-11-02: kprobe 上下文里不能睡 —— ksu_handle_setresuid 会调 ksu_install_fd()，
+ * 里面有 get_unused_fd_flags()/anon_inode_getfile()，都是可睡眠的。
+ * 原来在 pre_handler 里直接调，等于在 preempt-disabled 里睡觉：要么 BUG，要么 fd 根本装不上
+ * ⇒ 管理器 zygote fork 后 setresuid 拿不到 [ksu_driver] fd ⇒ 首页「未安装」。
+ * 改成 task_work，回到用户态前在正常上下文里跑。 */
+struct ksu_sp_setresuid_tw {
+    struct callback_head cb;
+    uid_t ruid, euid, suid;
+};
+
+static void ksu_sp_setresuid_tw_fn(struct callback_head *cb)
+{
+    struct ksu_sp_setresuid_tw *tw =
+        container_of(cb, struct ksu_sp_setresuid_tw, cb);
+    ksu_handle_setresuid(tw->ruid, tw->euid, tw->suid);
+    kfree(tw);
+}
 
 static int ksu_sp_setresuid_pre(struct kprobe *p, struct pt_regs *regs)
 {
     struct pt_regs *real = (struct pt_regs *)regs->regs[0];
-    unsigned int euid;
+    struct ksu_sp_setresuid_tw *tw;
+    uid_t ruid, euid, suid;
     if (!real)
         return 0;
-    euid = (unsigned int)real->regs[1];
-    if (euid == 0xffffffffu)
+    ruid = (uid_t)(unsigned int)real->regs[0];
+    euid = (uid_t)(unsigned int)real->regs[1];
+    suid = (uid_t)(unsigned int)real->regs[2];
+    if (euid == (uid_t)0xffffffffu)
         return 0;
-    ksu_handle_setresuid(current_uid().val, (uid_t)euid);
+    tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
+    if (!tw)
+        return 0;
+    tw->ruid = ruid;
+    tw->euid = euid;
+    tw->suid = suid;
+    tw->cb.func = ksu_sp_setresuid_tw_fn;
+    if (task_work_add(current, &tw->cb, TWA_RESUME))
+        kfree(tw);
     return 0;
 }
 
