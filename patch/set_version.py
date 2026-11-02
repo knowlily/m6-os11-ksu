@@ -26,7 +26,9 @@ def main(root, ver):
     orig = s
 
     # 1) 赋值形式：$(eval KSU_VERSION=...) 或 KSU_VERSION := $(shell ...)
-    s = re.sub(r"\$\(eval KSU_VERSION=[^)]*\)", "$(eval KSU_VERSION=%s)" % ver, s)
+    # 整行替换（原来的非贪婪写法会把 $(KSU_GIT_VERSION) 的右括号吃掉，留下 ")))" → make 报 missing separator）
+    s = re.sub(r"^([ 	]*)\$\(eval KSU_VERSION=.*$",
+               lambda m: m.group(1) + "$(eval KSU_VERSION=%s)" % ver, s, flags=re.M)
     s = re.sub(r"^(\s*)KSU_VERSION\s*:?=\s*\$\(shell expr[^\n]*",
                r"\1KSU_VERSION := %s" % ver, s, flags=re.M)
     # 2) 编译宏：-DKSU_VERSION=...（排除 _FULL / _TAG）
