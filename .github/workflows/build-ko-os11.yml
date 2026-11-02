@@ -51,6 +51,10 @@ on:
         description: "覆盖 ko 报给管理器的 KSU_VERSION（填管理器自己的版本号，如 finasu 33156）；留空=源码自动算"
         default: ""
         required: false
+      mgr_pkg:
+        description: "编进 ko 的默认管理器包名（如 com.resukisu.resukisu）；留空=沿用源码默认"
+        default: ""
+        required: false
 
 jobs:
   build:
@@ -219,6 +223,20 @@ jobs:
           python3 "$GITHUB_WORKSPACE/patch/set_version.py" "$KSUDIR" "${{ inputs.ksu_version }}"
           echo "---- KSU_VERSION 自检 ----"
           grep -n "DKSU_VERSION=" "$KSUDIR/kernel/Kbuild" | head -4
+
+      - name: 写入管理器包名（编进 ko）
+        if: ${{ inputs.mgr_pkg != '' }}
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          if grep -q "M6_MGR_PKG" "$KSUDIR/kernel/Kbuild"; then
+            echo "M6_MGR_PKG 已存在，跳过"
+          else
+            printf '\nccflags-y += -DM6_MGR_PKG=\\"%s\\"\n' "${{ inputs.mgr_pkg }}" >> "$KSUDIR/kernel/Kbuild"
+          fi
+          echo "---- M6_MGR_PKG 自检 ----"
+          grep -n "M6_MGR_PKG" "$KSUDIR/kernel/Kbuild" | tail -2
 
       - name: su creds 修复
         run: |
