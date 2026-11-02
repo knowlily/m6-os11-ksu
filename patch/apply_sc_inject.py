@@ -264,6 +264,14 @@ static int ksu_su_exec_pre(struct kprobe *p, struct pt_regs *regs)
     struct filename *fn = (struct filename *)regs->regs[1];
     const char *n;
 
+    /* 管理器里「传统 su 支持」关掉时，就不要改写 su 路径了（让开关是真的开关）。
+     * 弱引用：老分支没有这个全局变量时地址为 0，直接跳过判断。 */
+    {
+        extern bool ksu_su_compat_enabled __attribute__((weak));
+        if (&ksu_su_compat_enabled && !ksu_su_compat_enabled)
+            return 0;
+    }
+
     if (!ksu_su_path || !ksu_su_path[0])
         return 0;
     if (!fn || !fn->name)
@@ -575,6 +583,21 @@ void ksu_sp_hooks_init(void)
     if (ksu_sp_inited)
         return;
     ksu_sp_inited = true;
+
+    /* 传统 su 支持（管理器里的 su_compat 开关）。上游只在
+     * CONFIG_KSU_HOOK_SUSFS_INLINE 或「分发器装成功」分支里注册这个 feature handler，
+     * 本机 sys_call_table 只读、分发器永远装不上 ⇒ 管理器一直显示「内核不支持此特性」。
+     * 这里补一次注册，开关才能用；真正拦截 su 的是下面 ksu_su_exec_kp（会读这个开关）。 */
+    {
+        extern void ksu_sucompat_init(void) __attribute__((weak));
+        if (ksu_sucompat_init) {
+            ksu_sucompat_init();
+            pr_alert("ksu: sucompat feature registered\n");
+        } else {
+            pr_alert("ksu: sucompat_init not found\n");
+        }
+    }
+
     rc = register_kprobe(&ksu_sp_setresuid_kp);
 
     pr_alert("ksu: setresuid kprobe rc=%d\\n", rc);
