@@ -47,6 +47,10 @@ on:
         description: "产物 ko 的别名前缀（如 sukisu / finasu），留空则用原文件名"
         default: ""
         required: false
+      ksu_version:
+        description: "覆盖 ko 报给管理器的 KSU_VERSION（填管理器自己的版本号，如 finasu 33156）；留空=源码自动算"
+        default: ""
+        required: false
 
 jobs:
   build:
@@ -205,6 +209,16 @@ jobs:
               grep -n "backend_ready forced=1" "$KSUDIR/kernel/core/init.c" | head -2 || echo "!! backend_ready 补丁没落地"
             fi
           fi
+
+      - name: 统一版本号（KSU_VERSION 对齐管理器）
+        if: ${{ inputs.ksu_version != '' }}
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/patch/set_version.py" "$KSUDIR" "${{ inputs.ksu_version }}"
+          echo "---- KSU_VERSION 自检 ----"
+          grep -n "DKSU_VERSION=" "$KSUDIR/kernel/Kbuild" | head -4
 
       - name: su creds 修复
         run: |
