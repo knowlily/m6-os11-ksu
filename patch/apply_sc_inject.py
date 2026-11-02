@@ -265,7 +265,7 @@ static const struct ksu_sp_feature_handler ksu_sp_sucompat_h = {
     .set_handler = ksu_sp_sucompat_set,
 };
 
-static void ksu_sp_register_sucompat(void)
+void __init ksu_sp_register_sucompat(void)   /* 非 static：init.c 要跨文件调 */
 {
     extern int ksu_register_feature_handler(const struct ksu_sp_feature_handler *)
         __attribute__((weak));
@@ -625,8 +625,6 @@ void ksu_sp_hooks_init(void)
         return;
     ksu_sp_inited = true;
 
-    ksu_sp_register_sucompat();
-
     rc = register_kprobe(&ksu_sp_setresuid_kp);
 
     pr_alert("ksu: setresuid kprobe rc=%d\\n", rc);
@@ -712,7 +710,9 @@ def patch_init(root):
         # 回退到该 return 所在行的行首
         line_start = s.rfind(NL, brace, brace + rel)
         ins = line_start + 1 if line_start >= 0 else brace + rel
-    call = ("    extern void ksu_sp_hooks_init(void);" + NL
+    call = ("    extern void ksu_sp_register_sucompat(void);" + NL
+            + "    extern void ksu_sp_hooks_init(void);" + NL
+            + "    ksu_sp_register_sucompat();" + NL
             + "    ksu_sp_hooks_init();" + NL)
     s = s[:ins] + call + s[ins:]
     save(p, s, crlf)
