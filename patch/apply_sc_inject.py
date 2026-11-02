@@ -1,4 +1,24 @@
 # -*- coding: utf-8 -*-
+
+def _c_string_guard(block):
+    """拦住「C 字符串里混进真换行」（Python 三引号里少写一层转义）。
+    判据：每行未转义的双引号必须成对。"""
+    bs = chr(92)
+    for no, line in enumerate(block.split(chr(10)), 1):
+        if line.lstrip().startswith(("/*", "*")):
+            continue
+        q = 0
+        k = 0
+        while k < len(line):
+            if line[k] == bs:
+                k += 2
+                continue
+            if line[k] == chr(34):
+                q += 1
+            k += 1
+        if q % 2:
+            raise SystemExit("apply_sc_inject: 生成的第 %d 行 C 字符串未闭合（多半是 \n 少写一层转义）：%s" % (no, line.strip()[:100]))
+
 """把「注入 sys_call_table / ni_syscall + 调度器未装时不改写 syscallno」打进 KernelSU 源码。
 幂等：已打过就直接退出 0。容忍 CRLF/LF。找不到锚点也退出 0（不阻塞出 ko）。
 用法: python3 apply_sc_inject.py <KernelSU 源码目录>
@@ -153,6 +173,7 @@ module_param_named(kimg_voff, ksu_kimg_voff_addr, ulong, 0644);""", 1)
     #   ⇒ isManager=false ⇒ ksuVersion=null ⇒ 首页显示「未安装」。
     if "ksu_sp_setresuid_kp" not in s:
         s = s.rstrip() + '''
+        _c_string_guard(s)
 
 /* 2026-10-21: setresuid kprobe —— sys_call_table dispatcher 在本机不可用
  * （fixmap 写不进去 / set_memory_rw=-22），改用 kprobe 走同一条业务逻辑。
@@ -272,11 +293,11 @@ void __init ksu_sp_restore_sigenforce(void)
 {
     extern bool sig_enforce;
     if (sig_enforce) {
-        pr_alert("ksu: sig_enforce already 1\n");
+        pr_alert("ksu: sig_enforce already 1\\n");
         return;
     }
     sig_enforce = true;
-    pr_alert("ksu: sig_enforce restored to 1\n");
+    pr_alert("ksu: sig_enforce restored to 1\\n");
 }
 
 void __init ksu_sp_register_sucompat(void)   /* 非 static：init.c 要跨文件调 */
