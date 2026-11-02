@@ -45,7 +45,7 @@ def patch_hook(root):
                       """/* 2026-10-20: alternate write path (fixmap write of sys_call_table has no effect on Honor) */
 extern int set_memory_rw(unsigned long addr, int numpages);
 extern int set_memory_ro(unsigned long addr, int numpages);
-extern int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid);
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 void ksu_sp_hooks_init(void);
 
 syscall_fn_t *ksu_syscall_table = NULL;""", 1)
