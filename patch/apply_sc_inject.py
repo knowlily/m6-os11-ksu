@@ -232,6 +232,51 @@ extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 static int ksu_su_mgr_appid = -1;
 module_param_named(su_mgr_appid, ksu_su_mgr_appid, int, 0644);
 
+/* 传统 su 支持（管理器里的 su_compat 开关）。
+ * 上游的 ksu_sucompat_init() 带 __init，从 .text 调 → modpost section mismatch；
+ * 而 ksu_register_feature_handler() 是普通 .text，可以直接调。
+ * 所以自己注册一个 su_compat handler，状态放在本文件自己的开关里；
+ * ksu_su_exec_kp 读同一个开关 ⇒ 管理器里关掉就真的不重定向 su 了。 */
+static bool ksu_sp_sucompat_on = true;
+
+struct ksu_sp_feature_handler {
+    u32 feature_id;
+    const char *name;
+    int (*get_handler)(u64 *value);
+    int (*set_handler)(u64 value);
+};
+
+static int ksu_sp_sucompat_get(u64 *value)
+{
+    *value = ksu_sp_sucompat_on ? 1 : 0;
+    return 0;
+}
+
+static int ksu_sp_sucompat_set(u64 value)
+{
+    ksu_sp_sucompat_on = !!value;
+    return 0;
+}
+
+static const struct ksu_sp_feature_handler ksu_sp_sucompat_h = {
+    .feature_id = 0,   /* KSU_FEATURE_SU_COMPAT */
+    .name = "su_compat",
+    .get_handler = ksu_sp_sucompat_get,
+    .set_handler = ksu_sp_sucompat_set,
+};
+
+static void ksu_sp_register_sucompat(void)
+{
+    extern int ksu_register_feature_handler(const struct ksu_sp_feature_handler *)
+        __attribute__((weak));
+    int _rc;
+    if (!ksu_register_feature_handler) {
+        pr_alert("ksu: no ksu_register_feature_handler\\n");
+        return;
+    }
+    _rc = ksu_register_feature_handler(&ksu_sp_sucompat_h);
+    pr_alert("ksu: sucompat register rc=%d\\n", _rc);
+}
 static char *ksu_su_path;
 module_param_named(su_path, ksu_su_path, charp, 0644);
 static int ksu_su_pid;
@@ -264,13 +309,9 @@ static int ksu_su_exec_pre(struct kprobe *p, struct pt_regs *regs)
     struct filename *fn = (struct filename *)regs->regs[1];
     const char *n;
 
-    /* 管理器里「传统 su 支持」关掉时，就不要改写 su 路径了（让开关是真的开关）。
-     * 弱引用：老分支没有这个全局变量时地址为 0，直接跳过判断。 */
-    {
-        extern bool ksu_su_compat_enabled __attribute__((weak));
-        if (&ksu_su_compat_enabled && !ksu_su_compat_enabled)
-            return 0;
-    }
+    /* 管理器里关掉「传统 su 支持」时就不改写 su 路径 */
+    if (!ksu_sp_sucompat_on)
+        return 0;
 
     if (!ksu_su_path || !ksu_su_path[0])
         return 0;
@@ -584,19 +625,7 @@ void ksu_sp_hooks_init(void)
         return;
     ksu_sp_inited = true;
 
-    /* 传统 su 支持（管理器里的 su_compat 开关）。上游只在
-     * CONFIG_KSU_HOOK_SUSFS_INLINE 或「分发器装成功」分支里注册这个 feature handler，
-     * 本机 sys_call_table 只读、分发器永远装不上 ⇒ 管理器一直显示「内核不支持此特性」。
-     * 这里补一次注册，开关才能用；真正拦截 su 的是下面 ksu_su_exec_kp（会读这个开关）。 */
-    {
-        extern void ksu_sucompat_init(void) __attribute__((weak));
-        if (ksu_sucompat_init) {
-            ksu_sucompat_init();
-            pr_alert("ksu: sucompat feature registered\\n");
-        } else {
-            pr_alert("ksu: sucompat_init not found\\n");
-        }
-    }
+    ksu_sp_register_sucompat();
 
     rc = register_kprobe(&ksu_sp_setresuid_kp);
 
