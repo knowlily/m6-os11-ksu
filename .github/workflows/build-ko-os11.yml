@@ -238,6 +238,16 @@ jobs:
           echo "---- M6_MGR_PKG 自检 ----"
           grep -n "M6_MGR_PKG" "$KSUDIR/kernel/Kbuild" | tail -2
 
+      - name: sig_enforce 恢复（独立编译单元）
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/patch/apply_sig_enforce.py" "$KSUDIR"
+          echo "---- sig_enforce 自检 ----"
+          grep -n "ksu_sp_restore_sigenforce" "$KSUDIR/kernel/core/init.c" | head -3
+          grep -n "ksu_sigenforce.o" "$KSUDIR/kernel/Kbuild" | head -2
+
       - name: su creds 修复
         run: |
           cd work/Code_Opensource/kernel
