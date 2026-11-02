@@ -592,9 +592,9 @@ void ksu_sp_hooks_init(void)
         extern void ksu_sucompat_init(void) __attribute__((weak));
         if (ksu_sucompat_init) {
             ksu_sucompat_init();
-            pr_alert("ksu: sucompat feature registered\n");
+            pr_alert("ksu: sucompat feature registered\\n");
         } else {
-            pr_alert("ksu: sucompat_init not found\n");
+            pr_alert("ksu: sucompat_init not found\\n");
         }
     }
 
