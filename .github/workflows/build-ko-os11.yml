@@ -198,6 +198,12 @@ jobs:
               # 自检：KSU_PACKAGE_NAME 在 Next/BakaSU 里没有，补丁必须自带兜底定义，否则编译必挂
               grep -n "ifndef KSU_PACKAGE_NAME" "$KSUDIR"/kernel/manager/*throne*.c 2>/dev/null | head -2 || echo "!! 缺少 KSU_PACKAGE_NAME 兜底定义"
             fi
+            # 本机 sys_call_table 只读 ⇒ 分发器永远装不上；但管理器通信走 reboot kprobe + ioctl，
+            # 别让 backend_ready=false 把 get_info 的 HOOK_READY 位压成 0（管理器会判「未安装」）
+            if [ -f "$GITHUB_WORKSPACE/patch/apply_backend_ready.py" ]; then
+              python3 "$GITHUB_WORKSPACE/patch/apply_backend_ready.py" "$KSUDIR" || true
+              grep -n "backend_ready forced=1" "$KSUDIR/kernel/core/init.c" | head -2 || echo "!! backend_ready 补丁没落地"
+            fi
           fi
 
       - name: su creds 修复
