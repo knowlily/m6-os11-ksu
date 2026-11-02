@@ -31,6 +31,10 @@ BLOCK = r'''
 #ifndef KSU_PACKAGE_NAME
 #define KSU_PACKAGE_NAME "me.weishu.kernelsu"
 #endif
+/* 编译期写死的默认管理器包名：每份 ko 编进自己的那个（不传 mgr_pkgs 时用它）。 */
+#ifndef M6_MGR_PKG
+#define M6_MGR_PKG KSU_PACKAGE_NAME
+#endif
 static char *ksu_mgr_pkgs;
 module_param_named(mgr_pkgs, ksu_mgr_pkgs, charp, 0644);
 static bool ksu_mgr_dont_invalidate = true;
@@ -44,8 +48,8 @@ static bool ksu_pkg_match(const char *pkg)
     if (!pkg || !*pkg)
         return false;
     if (!p || !*p) {
-        /* 没传参数：保持原生行为 */
-        return strncmp(pkg, KSU_PACKAGE_NAME, sizeof(KSU_PACKAGE_NAME)) == 0;
+        /* 没传参数：退回编译期默认（每份 ko 只认自己的管理器） */
+        return strcmp(pkg, M6_MGR_PKG) == 0;
     }
     while (p && *p) {
         const char *comma = strchr(p, ',');
@@ -71,7 +75,7 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
     if (!p || !*p) {
         /* 没传 mgr_pkgs：完全保持原生行为（单包名） */
         list_for_each_entry (np, list, list) {
-            if (strncmp(np->package, KSU_PACKAGE_NAME, KSU_MAX_PACKAGE_NAME) == 0) {
+            if (strcmp(np->package, M6_MGR_PKG) == 0) {
                 pr_info("Crowning manager: uid=%d\n", np->uid);
                 ksu_set_manager_appid(np->uid);
                 break;
@@ -171,7 +175,25 @@ def patch_file(path):
             if not ok:
                 print(f"[mgr-pkgs] {path}: 没找到 crown_manager 定义，加冕顺序未修")
         else:
-            print(f"[mgr-pkgs] crown_manager 有 {nparams} 个参数，跳过顺序敏感替换（该分支按 apk 签名认管理器）")
+            # BakaSU 的 crown_manager(apk, uid_data, signature_index) 只按签名认管理器，
+            # 官方 KernelSU 的签名也在它的白名单里 ⇒ 选 BakaSU 点火会把 KernelSU 一起加冕。
+            # 在函数入口加一道包名闸门：apk 路径推出的包名必须在 mgr_pkgs / M6_MGR_PKG 里。
+            sig = "static void crown_manager("
+            i2 = src.find(sig)
+            j2 = src.find("{", i2) if i2 >= 0 else -1
+            gate = """
+    /* m6: 只加冕用户选中的管理器（原生按签名认，会把别家管理器也带进来） */
+    {
+        char _m6_pkg[KSU_MAX_PACKAGE_NAME];
+        if (get_pkg_from_apk_path(_m6_pkg, apk) < 0 || !ksu_pkg_match(_m6_pkg))
+            return;
+    }
+"""
+            if j2 > 0:
+                src = src[:j2 + 1] + gate + src[j2 + 1:]
+                print(f"[mgr-pkgs] crown_manager({nparams} 参) 已插包名闸门")
+            else:
+                print(f"[mgr-pkgs] crown_manager 定义没找到，闸门未插")
     else:
         idx = src.find("#define")
         if idx < 0:
