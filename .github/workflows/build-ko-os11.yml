@@ -11,6 +11,10 @@ on:
         description: "tag/branch：BakaSU v4.2.0-rc3=uapi4 / main=uapi5 / tiann v3.3.1=uapi5"
         default: "v4.2.0-rc3"
         required: true
+      hook_mode:
+        description: "钩子后端：auto=源码默认 / manual=KSU_MANUAL_HOOK（这台荣耀内核没有 syscalls tracepoint，必须用 manual）"
+        default: "auto"
+        required: false
       ksu_debug:
         description: "打开 CONFIG_KSU_DEBUG（ksud debug set-manager 可用 + 保留 kobject）"
         type: boolean
@@ -259,6 +263,19 @@ jobs:
           else
             ./scripts/config --file out/.config -d KSU_DEBUG || true
           fi
+          # 钩子后端：/sys/kernel/tracing/events 里只有 raw_syscalls、没有 syscalls
+          # ⇒ CONFIG_KSU_TRACEPOINT_HOOK 注册必然失败，管理器侧表现为「未安装」
+          case "${{ inputs.hook_mode }}" in
+            manual)
+              ./scripts/config --file out/.config -e KSU_MANUAL_HOOK -d KSU_TRACEPOINT_HOOK -d KSU_HOOK_TRACEPOINT || true
+              echo "HOOK_MODE=manual";;
+            tracepoint)
+              ./scripts/config --file out/.config -e KSU_TRACEPOINT_HOOK -e KSU_HOOK_TRACEPOINT -d KSU_MANUAL_HOOK || true
+              echo "HOOK_MODE=tracepoint";;
+            *)
+              echo "HOOK_MODE=auto（源码默认）";;
+          esac
+          grep -E "^CONFIG_KSU_(MANUAL_HOOK|TRACEPOINT_HOOK|HOOK_TRACEPOINT|HOOK_SUSFS_INLINE)" out/.config || echo "!! 没看到钩子后端相关 CONFIG"
           # LOCALVERSION_AUTO=y 在没有 .git 时会乱加后缀，必须关掉，否则 vermagic 对不上
           ./scripts/config --file out/.config -d LOCALVERSION_AUTO || true
           # 设备 config 里 MODULE_SIG_ALL=y/MODULE_SIG_KEY=honor_signing_key.pem，我们没有这把私钥
