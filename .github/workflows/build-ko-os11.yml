@@ -318,6 +318,16 @@ jobs:
         run: |
           mkdir -p artifacts
           grep -E "^CONFIG_(KSU|KSU_DEBUG)" work/Code_Opensource/kernel/out/.config || echo "!! CONFIG_KSU 没进 .config"
+          # 体积：用 llvm-strip --strip-debug 去掉 DWARF（自己改 ELF 段表容易踩内核 elf_validity_check）
+          STRIP="$(dirname "$(command -v clang)")/llvm-strip"
+          [ -x "$STRIP" ] || STRIP="$(command -v llvm-strip || true)"
+          if [ -n "$STRIP" ]; then
+            for f in $(find work/Code_Opensource/kernel -name "kernelsu*.ko"); do
+              "$STRIP" --strip-debug "$f" && echo "stripped $f -> $(stat -c%s "$f") 字节" || echo "!! strip 失败 $f"
+            done
+          else
+            echo "!! 找不到 llvm-strip，保留原始 ko"
+          fi
           ALIAS="${{ inputs.ko_alias }}"
           if [ "${{ inputs.no_modversions }}" = "true" ]; then
             echo "→ 清空 __versions 段（B 路线：vermagic 保留 modversions token，但内核遍历到 0 条版本）"
