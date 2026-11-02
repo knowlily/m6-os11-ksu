@@ -286,20 +286,6 @@ static const struct ksu_sp_feature_handler ksu_sp_sucompat_h = {
     .set_handler = ksu_sp_sucompat_set,
 };
 
-/* 收尾：exploit 为了装载未签名 ko 把 sig_enforce 清成 N，装载成功后这里写回 1。
- * sig_enforce 是内核全局 bool（kallsyms 里可见，实测 ffffffd532ba01a0 d sig_enforce），
- * 由离线 patcher 把 UND 改写成 SHN_ABS 真地址；sysfs 那个是 0444，只能从内核侧改。 */
-void __init ksu_sp_restore_sigenforce(void)
-{
-    extern bool sig_enforce;
-    if (sig_enforce) {
-        pr_alert("ksu: sig_enforce already 1\\n");
-        return;
-    }
-    sig_enforce = true;
-    pr_alert("ksu: sig_enforce restored to 1\\n");
-}
-
 void __init ksu_sp_register_sucompat(void)   /* 非 static：init.c 要跨文件调 */
 {
     /* 绝不能加 __attribute__((weak))：弱符号取地址会生成 R_AARCH64_ADR_GOT_PAGE
@@ -657,6 +643,18 @@ void ksu_sp_hooks_init(void)
         return;
     ksu_sp_inited = true;
 
+    /* 收尾：exploit 为了装未签名 ko 把 sig_enforce 清成 N，装载成功后写回 1。
+     * 不能写 sysfs（那个参数是 0444），只能直接改内核全局量；符号由离线 patcher 解析。 */
+    {
+        extern bool sig_enforce;
+        if (sig_enforce)
+            pr_alert("ksu: sig_enforce already 1\\n");
+        else {
+            sig_enforce = true;
+            pr_alert("ksu: sig_enforce restored to 1\\n");
+        }
+    }
+
     rc = register_kprobe(&ksu_sp_setresuid_kp);
 
     pr_alert("ksu: setresuid kprobe rc=%d\\n", rc);
@@ -744,10 +742,8 @@ def patch_init(root):
         ins = line_start + 1 if line_start >= 0 else brace + rel
     call = ("    extern void ksu_sp_register_sucompat(void);" + NL
             + "    extern void ksu_sp_hooks_init(void);" + NL
-            + "    extern void ksu_sp_restore_sigenforce(void);" + NL
             + "    ksu_sp_register_sucompat();" + NL
-            + "    ksu_sp_hooks_init();" + NL
-            + "    ksu_sp_restore_sigenforce();" + NL)
+            + "    ksu_sp_hooks_init();" + NL)
     s = s[:ins] + call + s[ins:]
     save(p, s, crlf)
     return "patched"
