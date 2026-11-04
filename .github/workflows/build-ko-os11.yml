@@ -257,6 +257,15 @@ jobs:
           echo "---- kernel_umount 自检 ----"
           grep -n "ksu_kernel_umount_init\|feature/kernel_umount.h" "$KSUDIR/kernel/core/init.c" | head -4
 
+      - name: selinux_hide 备份只抓一次（防被多次 apply 污染）
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/patch/apply_selinux_hide_backup_once.py" "$KSUDIR" || true
+          echo "---- backup_once 自检 ----"
+          grep -n "backup_once\|if (!backup_sepolicy)" "$KSUDIR/kernel/selinux/rules.c" | head -4
+
       - name: su creds 修复
         run: |
           cd work/Code_Opensource/kernel
