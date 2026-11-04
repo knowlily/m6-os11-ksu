@@ -266,6 +266,15 @@ jobs:
           echo "---- backup_once 自检 ----"
           grep -n "backup_once\|if (!backup_sepolicy)" "$KSUDIR/kernel/selinux/rules.c" | head -4
 
+      - name: selinux_hide hook 进入日志（区分 hook 没被调用 / 备份脏）
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/patch/apply_selinux_hide_trace.py" "$KSUDIR" || true
+          echo "---- HOOKTRACE 自检 ----"
+          grep -c "HOOKTRACE" "$KSUDIR/kernel/feature/selinux_hide.c" || true
+
       - name: su creds 修复
         run: |
           cd work/Code_Opensource/kernel
