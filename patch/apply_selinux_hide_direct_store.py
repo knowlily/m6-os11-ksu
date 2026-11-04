@@ -51,7 +51,8 @@ rep('    selinux_write_op = find_kernel_symbol_exact("write_op");',
     '''    selinux_write_op = find_kernel_symbol_exact("write_op");
     if (!ksu_set_memory_rw)
         ksu_set_memory_rw = (ksu_setmem_fn)find_kernel_symbol_exact("set_memory_rw");
-    pr_info("selinux_hide: set_memory_rw resolved=%d", ksu_set_memory_rw != 0);''', "resolve-setmem")
+    pr_info("selinux_hide: set_memory_rw resolved=%d", ksu_set_memory_rw != 0);
+    ksu_fixmap_selftest();''', "resolve-setmem")
 
 rep("""    write_op_fn my = my_write_context;
     orig_context_write = *context_write;

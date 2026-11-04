@@ -39,20 +39,50 @@ static int ksu_fixmap_write(void *dst, const void *src, size_t n)
     unsigned long p = (unsigned long)dst;
     unsigned long phy = phys_from_virt(p, &err);
     unsigned long want = *(const unsigned long *)src;
+    unsigned long off = p & ~PAGE_MASK;
+    unsigned long fmap_back, lin_back, va_back;
 
     if (err) {
         pr_err("selinux_hide: phys_from_virt(0x%lx) failed: %d\n", p, err);
         return err;
     }
+
+    /* A) fixmap 写 + fixmap 回读 + 镜像别名回读 */
     void *map = set_fixmap_offset(FIX_TEXT_POKE0, phy);
     int ret = (int)copy_to_kernel_nofault(map, src, n);
+    fmap_back = *(volatile unsigned long *)map;
     clear_fixmap(FIX_TEXT_POKE0);
-
-    pr_info("selinux_hide: fixmap_write dst=0x%lx phy=0x%lx ret=%d want=0x%lx got=0x%lx\n", p, phy, ret, want,
-            *(volatile unsigned long *)dst);
-    if (!ret && *(volatile unsigned long *)dst == want)
+    va_back = *(volatile unsigned long *)dst;
+    pr_info("selinux_hide: fixmap dst=0x%lx phy=0x%lx ret=%d want=0x%lx fmap_back=0x%lx va_back=0x%lx\n", p, phy,
+            ret, want, fmap_back, va_back);
+    if (!ret && va_back == want)
         return 0;
+
+    /* B) 线性映射别名写（__va(phy)）+ 回读；copy_to_kernel_nofault 不会 panic */
+    void *lin = (void *)((unsigned long)__va(phy));
+    int ret2 = (int)copy_to_kernel_nofault(lin, src, n);
+    lin_back = *(volatile unsigned long *)lin;
+    va_back = *(volatile unsigned long *)dst;
+    pr_info("selinux_hide: linear dst=0x%lx lin=0x%lx off=0x%lx ret=%d want=0x%lx lin_back=0x%lx va_back=0x%lx\n", p,
+            (unsigned long)lin, off, ret2, want, lin_back, va_back);
+    if (!ret2 && va_back == want)
+        return 0;
+
     return -EIO;
+}
+
+/* 对照组：对「我们自己模块里的一个静态变量」做同样的 fixmap 写，
+ * 用来区分「机制坏」和「目标页被保护/phys 算错」。
+ */
+static unsigned long ksu_selftest_slot;
+
+static void ksu_fixmap_selftest(void)
+{
+    unsigned long val = 0xa5a5c3c3deadbeefUL;
+    unsigned long before = ksu_selftest_slot;
+    int r = ksu_fixmap_write(&ksu_selftest_slot, &val, sizeof(val));
+    pr_info("selinux_hide: SELFTEST slot=0x%lx before=0x%lx after=0x%lx want=0x%lx ret=%d\n",
+            (unsigned long)&ksu_selftest_slot, before, ksu_selftest_slot, val, r);
 }
 
 static int ksu_ro_write(void *dst, const void *src, size_t n)
