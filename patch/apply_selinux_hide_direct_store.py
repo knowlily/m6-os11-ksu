@@ -47,6 +47,12 @@ def rep(old, new, tag):
     src = src.replace(old, new, 1)
 
 
+rep('    selinux_write_op = find_kernel_symbol_exact("write_op");',
+    '''    selinux_write_op = find_kernel_symbol_exact("write_op");
+    if (!ksu_set_memory_rw)
+        ksu_set_memory_rw = (ksu_setmem_fn)find_kernel_symbol_exact("set_memory_rw");
+    pr_info("selinux_hide: set_memory_rw resolved=%d", ksu_set_memory_rw != 0);''', "resolve-setmem")
+
 rep("""    write_op_fn my = my_write_context;
     orig_context_write = *context_write;
     ret = ksu_patch_text(context_write, &my, sizeof(my), KSU_PATCH_TEXT_FLUSH_DCACHE);""",
@@ -54,8 +60,9 @@ rep("""    write_op_fn my = my_write_context;
     myu.f4 = my_write_context_auto;
     write_op_fn my = myu.f3;
     orig_context_write = *context_write;
-    memcpy((void *)context_write, &my, sizeof(my)); /* DIRECTSTORE: .data 直接写 */
-    ret = 0;""", "install-context")
+    ret = ksu_ro_write(context_write, &my, sizeof(my)); /* DIRECTSTORE */
+    if (ret)
+        goto unhook;""", "install-context")
 
 rep("""    my = my_write_access;
     orig_access_write = *access_write;
@@ -63,27 +70,24 @@ rep("""    my = my_write_access;
     """    myu.f4 = my_write_access_auto;
     my = myu.f3;
     orig_access_write = *access_write;
-    memcpy((void *)access_write, &my, sizeof(my)); /* DIRECTSTORE: .data 直接写 */
-    ret = 0;""", "install-access")
+    ret = ksu_ro_write(access_write, &my, sizeof(my)); /* DIRECTSTORE */
+    if (ret)
+        goto unhook;""", "install-access")
 
 rep("""        ret =
             ksu_patch_text(context_write, &orig_context_write, sizeof(orig_context_write), KSU_PATCH_TEXT_FLUSH_DCACHE);""",
-    """        memcpy((void *)context_write, &orig_context_write, sizeof(orig_context_write)); /* DIRECTSTORE */
-        ret = 0;""", "unhook-context")
+    """        ret = ksu_ro_write(context_write, &orig_context_write, sizeof(orig_context_write)); /* DIRECTSTORE */""", "unhook-context")
 
 rep("""        ret = ksu_patch_text(access_write, &orig_access_write, sizeof(orig_access_write), KSU_PATCH_TEXT_FLUSH_DCACHE);""",
-    """        memcpy((void *)access_write, &orig_access_write, sizeof(orig_access_write)); /* DIRECTSTORE */
-        ret = 0;""", "unhook-access")
+    """        ret = ksu_ro_write(access_write, &orig_access_write, sizeof(orig_access_write)); /* DIRECTSTORE */""", "unhook-access")
 
 rep("""        ret = ksu_patch_text(sel_open_handle_status_slot, &orig_sel_open_handle_status,
                              sizeof(orig_sel_open_handle_status), KSU_PATCH_TEXT_FLUSH_DCACHE);""",
-    """        memcpy((void *)sel_open_handle_status_slot, &orig_sel_open_handle_status,
-               sizeof(orig_sel_open_handle_status)); /* DIRECTSTORE */
-        ret = 0;""", "unhook-status")
+    """        ret = ksu_ro_write(sel_open_handle_status_slot, &orig_sel_open_handle_status,
+                           sizeof(orig_sel_open_handle_status)); /* DIRECTSTORE */""", "unhook-status")
 
 rep("""    int ret = ksu_patch_text(sel_open_handle_status_slot, &new_fn, sizeof(new_fn), KSU_PATCH_TEXT_FLUSH_DCACHE);""",
-    """    memcpy((void *)sel_open_handle_status_slot, &new_fn, sizeof(new_fn)); /* DIRECTSTORE */
-    int ret = 0;
+    """    int ret = ksu_ro_write(sel_open_handle_status_slot, &new_fn, sizeof(new_fn)); /* DIRECTSTORE */
     pr_info("selinux_hide: DIRECTSTORE status_open slot=0x%lx now=0x%lx\\n",
             (unsigned long)sel_open_handle_status_slot, (unsigned long)*sel_open_handle_status_slot);""",
     "install-status")

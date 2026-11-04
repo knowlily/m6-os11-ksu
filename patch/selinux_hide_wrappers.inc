@@ -17,6 +17,36 @@ static inline ssize_t ksu_call_orig(write_op_fn fn, struct file *file, const cha
     return u.f4(file, buf, size, ppos);
 }
 
+/* ===== 关键：write_op[] 和 sel_handle_status_ops 都在 .data..ro_after_init，
+ * 直接 memcpy 会触发 "write to read-only memory" 然后 panic（23:24 那次就是这么挂的）。
+ * 必须先 set_memory_rw 把所在页改成可写，再写。set_memory_rw 不是导出符号，
+ * 通过 kallsyms 在运行时取。
+ */
+typedef int (*ksu_setmem_fn)(unsigned long addr, int numpages);
+static ksu_setmem_fn ksu_set_memory_rw;
+
+static int ksu_ro_write(void *dst, const void *src, size_t n)
+{
+    unsigned long a = (unsigned long)dst;
+    unsigned long first = a & PAGE_MASK;
+    unsigned long last = (a + n - 1) & PAGE_MASK;
+    int pages = (int)((last - first) / PAGE_SIZE) + 1;
+    int r;
+
+    if (!ksu_set_memory_rw) {
+        pr_err("selinux_hide: set_memory_rw unavailable, refuse to patch RO page\n");
+        return -ENOSYS;
+    }
+    r = ksu_set_memory_rw(first, pages);
+    if (r) {
+        pr_err("selinux_hide: set_memory_rw(0x%lx,%d) failed: %d\n", first, pages, r);
+        return r;
+    }
+    memcpy(dst, src, n);
+    pr_info("selinux_hide: ro_write dst=0x%lx val=0x%lx pages=%d ok\n", a, *(const unsigned long *)src, pages);
+    return 0;
+}
+
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     if (likely(current_uid().val < 10000)) {
