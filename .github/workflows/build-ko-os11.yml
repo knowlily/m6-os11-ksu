@@ -248,6 +248,15 @@ jobs:
           grep -n "ksu_sp_restore_sigenforce" "$KSUDIR/kernel/core/init.c" | head -3
           grep -n "ksu_sigenforce.o" "$KSUDIR/kernel/Kbuild" | head -2
 
+      - name: kernel_umount 注册（管理器「卸载模块」开关）
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/patch/apply_kernel_umount_init.py" "$KSUDIR"
+          echo "---- kernel_umount 自检 ----"
+          grep -n "ksu_kernel_umount_init\|feature/kernel_umount.h" "$KSUDIR/kernel/core/init.c" | head -4
+
       - name: su creds 修复
         run: |
           cd work/Code_Opensource/kernel
