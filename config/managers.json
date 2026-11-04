@@ -128,5 +128,15 @@
     "apk_vc": 33155,
     "apk_file": "FinaSU_v1.4.2.apk",
     "sc_inject": true
+  },
+  "next342": {
+    "repo": "KernelSU-Next/KernelSU-Next",
+    "ref": "v3.4.2",
+    "tarball": true,
+    "uapi": 5,
+    "manager": "com.rifsxd.ksunext",
+    "note": "官方包名版（kqvdie 那份是伪装包名同版本）；init.c 同样缺 ksu_kernel_umount_init，靠 apply_kernel_umount_init.py 挂 sulog 锚点",
+    "apk_vc": 33355,
+    "apk_file": "KernelSU-Next_v3.4.2.apk"
   }
 }
