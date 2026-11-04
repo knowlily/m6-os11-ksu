@@ -50,7 +50,9 @@ def rep(old, new, tag):
 rep("""    write_op_fn my = my_write_context;
     orig_context_write = *context_write;
     ret = ksu_patch_text(context_write, &my, sizeof(my), KSU_PATCH_TEXT_FLUSH_DCACHE);""",
-    """    write_op_fn my = (write_op_fn)(void *)my_write_context_auto;
+    """    union { ksu_ctx4_fn f4; write_op_fn f3; } myu;
+    myu.f4 = my_write_context_auto;
+    write_op_fn my = myu.f3;
     orig_context_write = *context_write;
     memcpy((void *)context_write, &my, sizeof(my)); /* DIRECTSTORE: .data 直接写 */
     ret = 0;""", "install-context")
@@ -58,7 +60,8 @@ rep("""    write_op_fn my = my_write_context;
 rep("""    my = my_write_access;
     orig_access_write = *access_write;
     ret = ksu_patch_text(access_write, &my, sizeof(my), KSU_PATCH_TEXT_FLUSH_DCACHE);""",
-    """    my = (write_op_fn)(void *)my_write_access_auto;
+    """    myu.f4 = my_write_access_auto;
+    my = myu.f3;
     orig_access_write = *access_write;
     memcpy((void *)access_write, &my, sizeof(my)); /* DIRECTSTORE: .data 直接写 */
     ret = 0;""", "install-access")

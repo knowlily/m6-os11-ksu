@@ -5,10 +5,22 @@
  */
 typedef ssize_t (*ksu_ctx4_fn)(struct file *file, const char __user *buf, size_t size, loff_t *ppos);
 
+/* 3 参 <-> 4 参之间不能直接强转（-Wcast-function-type 会报错），走 union */
+static inline ssize_t ksu_call_orig(write_op_fn fn, struct file *file, const char __user *buf, size_t size,
+                                    loff_t *ppos)
+{
+    union {
+        write_op_fn f3;
+        ksu_ctx4_fn f4;
+    } u;
+    u.f3 = fn;
+    return u.f4(file, buf, size, ppos);
+}
+
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     if (likely(current_uid().val < 10000)) {
-        return orig_context_write ? ((ksu_ctx4_fn)orig_context_write)(file, ubuf, size, ppos) : -EINVAL;
+        return orig_context_write ? ksu_call_orig(orig_context_write, file, ubuf, size, ppos) : -EINVAL;
     }
     if (size == 0 || size > 4096)
         return -EINVAL;
@@ -35,7 +47,7 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     if (likely(current_uid().val < 10000)) {
-        return orig_access_write ? ((ksu_ctx4_fn)orig_access_write)(file, ubuf, size, ppos) : -EINVAL;
+        return orig_access_write ? ksu_call_orig(orig_access_write, file, ubuf, size, ppos) : -EINVAL;
     }
     if (size == 0 || size > 4096)
         return -EINVAL;
