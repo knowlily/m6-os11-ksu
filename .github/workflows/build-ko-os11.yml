@@ -275,6 +275,17 @@ jobs:
           echo "---- HOOKTRACE 自检 ----"
           grep -c "HOOKTRACE" "$KSUDIR/kernel/feature/selinux_hide.c" || true
 
+      - name: selinux_hide 改直写 .data（ksu_patch_text 对数据段是空操作）
+        run: |
+          cd work/Code_Opensource/kernel
+          KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
+          [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/patch/apply_selinux_hide_direct_store.py" "$KSUDIR"
+          echo "---- direct-store 自检 ----"
+          grep -c "DIRECTSTORE" "$KSUDIR/kernel/feature/selinux_hide.c" || true
+          echo "残留 ksu_patch_text 次数（应为 0）:"
+          grep -c "ksu_patch_text" "$KSUDIR/kernel/feature/selinux_hide.c" || true
+
       - name: su creds 修复
         run: |
           cd work/Code_Opensource/kernel
