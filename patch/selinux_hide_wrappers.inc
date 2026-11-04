@@ -1,3 +1,6 @@
+#include <asm/fixmap.h>
+#include <asm-generic/fixmap.h>
+
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
  * 也可能给 __user 指针；两种都不能崩，所以先 copy_from_user，
@@ -25,6 +28,33 @@ static inline ssize_t ksu_call_orig(write_op_fn fn, struct file *file, const cha
 typedef int (*ksu_setmem_fn)(unsigned long addr, int numpages);
 static ksu_setmem_fn ksu_set_memory_rw;
 
+/* 两级写：
+ *   1) 先试 fixmap 直写（和 ksu_patch_text 同一套：phys_from_virt → set_fixmap → copy_to_kernel_nofault，
+ *      但不做 dcache 刷新）——这是官方绕过 ro_after_init 的正路
+ *   2) fixmap 之后立刻读回校验；值没变就再退 set_memory_rw（本 ROM 对镜像地址回 -22，大概率没用）
+ */
+static int ksu_fixmap_write(void *dst, const void *src, size_t n)
+{
+    int err = 0;
+    unsigned long p = (unsigned long)dst;
+    unsigned long phy = phys_from_virt(p, &err);
+    unsigned long want = *(const unsigned long *)src;
+
+    if (err) {
+        pr_err("selinux_hide: phys_from_virt(0x%lx) failed: %d\n", p, err);
+        return err;
+    }
+    void *map = set_fixmap_offset(FIX_TEXT_POKE0, phy);
+    int ret = (int)copy_to_kernel_nofault(map, src, n);
+    clear_fixmap(FIX_TEXT_POKE0);
+
+    pr_info("selinux_hide: fixmap_write dst=0x%lx phy=0x%lx ret=%d want=0x%lx got=0x%lx\n", p, phy, ret, want,
+            *(volatile unsigned long *)dst);
+    if (!ret && *(volatile unsigned long *)dst == want)
+        return 0;
+    return -EIO;
+}
+
 static int ksu_ro_write(void *dst, const void *src, size_t n)
 {
     unsigned long a = (unsigned long)dst;
@@ -32,6 +62,10 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
     unsigned long last = (a + n - 1) & PAGE_MASK;
     int pages = (int)((last - first) / PAGE_SIZE) + 1;
     int r;
+
+    r = ksu_fixmap_write(dst, src, n);
+    if (!r)
+        return 0;
 
     if (!ksu_set_memory_rw) {
         pr_err("selinux_hide: set_memory_rw unavailable, refuse to patch RO page\n");
@@ -43,7 +77,8 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
         return r;
     }
     memcpy(dst, src, n);
-    pr_info("selinux_hide: ro_write dst=0x%lx val=0x%lx pages=%d ok\n", a, *(const unsigned long *)src, pages);
+    pr_info("selinux_hide: ro_write dst=0x%lx want=0x%lx got=0x%lx pages=%d\n", a, *(const unsigned long *)src,
+            *(volatile unsigned long *)dst, pages);
     return 0;
 }
 
@@ -51,6 +86,14 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
 {
     if (likely(current_uid().val < 10000)) {
         return orig_context_write ? ksu_call_orig(orig_context_write, file, ubuf, size, ppos) : -EINVAL;
+    }
+    if (!backup_sepolicy) {
+        pr_err("selinux_hide: backup_sepolicy NULL, fall back to original\n");
+        return ksu_call_orig(orig_context_write, file, ubuf, size, ppos);
+    }
+    if (!backup_sepolicy) {
+        pr_err("selinux_hide: backup_sepolicy NULL, fall back to original\n");
+        return ksu_call_orig(orig_access_write, file, ubuf, size, ppos);
     }
     if (size == 0 || size > 4096)
         return -EINVAL;
