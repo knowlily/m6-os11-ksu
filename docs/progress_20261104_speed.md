@@ -89,3 +89,30 @@ App 只看外壳 rc → 以为成功 → 去轮询 `/proc/modules` 等满 240 s�
 | 合计 | **45.9 s** |
 
 若那次 miss 也算 hit（或 CHURN_ROUNDS 降下来后重试一发）→ 可进 **22 s** 左右。
+
+## 5. 结果：CHURN_ROUNDS 16 → 4，总耗时 45.9 s → 23.0 s
+
+```
+total 22989ms
+549ms   1 工作目录     275ms 1.5 ksud+uapi    918ms 2 部署二进制     21246ms 7 完成
+[wall] start 0.0 → pressure_done 2.3
+shot1 2.3→4.7  hit round=1
+shot2 4.7→6.2  hit round=0
+shot3 6.2→8.5  hit round=1
+shot4 8.5→11.7 hit round=1
+shot5 11.7→13.7 hit round=1 → [ksu] sig_enforce now=N
+rootd 13.7 → kgo ~7.5 s → kernelsu Live (E)
+```
+
+**五发全部在 round 0/1 命中，没有一次 miss** —— 降轮次对命中率零影响，验证了上面的统计。
+
+### 剩下的时间账（距离 15 s 还差 8 s）
+
+| 段 | 耗时 | 说明 |
+|---|---|---|
+| 压力填充 | 2.3 s | 每次从 ~7 GB 压到 4.8 GB，必须真写内存 |
+| 5 发 UAF | 11.4 s | 每发 ~2 s，已是现状下限 |
+| kgo（ksud install + patcher 1.9 s + insmod + su probe） | ~7.5 s | patcher 解析 4580 个符号，insmod 660 KB |
+| 其它（部署/校验/getenforce） | ~1.7 s | |
+
+要再往下压只有两条路：把压力 hog 做成常驻进程（跨开火复用）、或 kgo 里跳过未变化的 `su` 重写。
