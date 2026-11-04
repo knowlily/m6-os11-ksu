@@ -116,3 +116,35 @@ rootd 13.7 → kgo ~7.5 s → kernelsu Live (E)
 | 其它（部署/校验/getenforce） | ~1.7 s | |
 
 要再往下压只有两条路：把压力 hog 做成常驻进程（跨开火复用）、或 kgo 里跳过未变化的 `su` 重写。
+
+## 6. SukiSU 首次真机成功 + 两处"必败就别硬撑"的改动（app 5.0）
+
+18:52 那一发把管理器切到 **SukiSU v4.3.0-r1（ko 41140）**，3 轮 216 s 后成功：
+
+```
+✔ /proc/modules: kernelsu 557056 0 - Live 0xffffffe8f3b13000 (E)
+SELinux：Enforcing ✔
+第 1 发 97.4 s 失败 / 第 2 发 98.4 s 失败 / 第 3 发 19.5 s 成功
+```
+
+前两轮的死因不是新问题：
+
+```
+[ksu] sig_enforce now=?            ← B2 已 Permissive，读不到值，只能盲打
+98260_SIG_ENFORCE_CLEARED=0        ← 3 次全 miss
+[cred] asked child to take over (KSU)
+（没有 [rootd] listening）→ App 等 150 秒超时
+```
+
+sig_enforce 没清零 ⇒ insmod 必被 `EKEYREJECTED` 拒 ⇒ rootd 永远起不来。
+旧流程却还硬着头皮去 install，白等 150 秒。
+
+### 改动
+
+1. `PC98260_SIG_TRIES` 默认 3 → **6**（单发命中率约 1/3，6 次全 miss 从 ~30% 降到 ~9%；
+   churn=4 之后一次 miss 只 ~9 s）
+2. **payload 主动认输**：`SIG_ENFORCE_CLEARED=0` 时打印 `98260_ABORT=sig_not_cleared`
+   并 park（**不退出**，保护持页进程不释放），App 看到标记立刻开下一轮
+3. App 的等待循环新增 `ABORTED` 分支，判定排在 `ALIVE` 之前（payload 是暂停而非退出）
+
+预期：sig 全 miss 的那一轮从 ~100 s 降到 ~50 s（6 次盲打），且不再有 150 s 空等。
