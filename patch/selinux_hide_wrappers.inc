@@ -264,7 +264,7 @@ static int ksu_fops_restore(const char *path, const struct file_operations *orig
 /* status 页是普通内核页（可写），直接改字段，不用 hook */
 typedef struct page *(*ksu_status_page_fn)(void);
 
-static int ksu_status_scrub(void)
+static __maybe_unused int ksu_status_scrub(void)
 {
     ksu_status_page_fn fn;
     struct page *pg;
@@ -311,23 +311,20 @@ static int ksu_fops_queued;
 
 static void ksu_fops_apply(struct work_struct *w)
 {
-    int i;
-    struct file *f;
-    struct inode *in;
+    int i, r1, r2;
 
     for (i = 0; i < 200 && system_state != SYSTEM_RUNNING; i++)
         msleep(50);
-    pr_info("selinux_hide: probe start system_state=%d i=%d\n", (int)system_state, i);
+    pr_info("selinux_hide: fops work start system_state=%d i=%d\n", (int)system_state, i);
 
-    f = filp_open("/sys/fs/selinux/context", O_RDONLY, 0);
-    pr_info("selinux_hide: probe filp_open ret=%ld\n", IS_ERR(f) ? PTR_ERR(f) : 0L);
-    if (!IS_ERR(f)) {
-        in = file_inode(f);
-        pr_info("selinux_hide: probe inode=0x%lx i_fop=0x%lx\n", (unsigned long)in, in ? (unsigned long)in->i_fop : 0UL);
-        filp_close(f, NULL);
-        pr_info("selinux_hide: probe closed ok\n");
-    }
-    pr_info("selinux_hide: probe done\n");
+    r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
+    pr_info("selinux_hide: fops work ctx ret=%d\n", r1);
+
+    r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
+    pr_info("selinux_hide: fops work acc ret=%d\n", r2);
+
+    ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
+    pr_info("selinux_hide: fops work done state=%d\n", ksu_fops_state);
 }
 
 /* 调度：按"要写进去的那个指针"判断是哪个文件 */
