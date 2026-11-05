@@ -5,6 +5,7 @@
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/workqueue.h>
+#include <linux/delay.h>
 
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
@@ -306,14 +307,16 @@ static int ksu_ro_write_old(void *dst, const void *src, size_t n)
 /* ===== 延迟执行：module init 阶段 filp_open 会卡死（6.9/7.7 都死在 init_module） ===== */
 static void ksu_fops_apply(struct work_struct *w);
 
-static DECLARE_WORK(ksu_fops_work, ksu_fops_apply);
+static DECLARE_DELAYED_WORK(ksu_fops_work, ksu_fops_apply);
 static int ksu_fops_queued;
 
 static void ksu_fops_apply(struct work_struct *w)
 {
-    int r1, r2, r3;
+    int r1, r2, r3, i;
 
-    pr_info("selinux_hide: fops work start system_state=%d\n", (int)system_state);
+    for (i = 0; i < 200 && system_state != SYSTEM_RUNNING; i++)
+        msleep(50);
+    pr_info("selinux_hide: fops work start system_state=%d i=%d\n", (int)system_state, i);
     r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
     pr_info("selinux_hide: fops work ctx ret=%d\n", r1);
     r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
@@ -334,7 +337,7 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
         if (!ksu_fops_queued) {
             ksu_fops_queued = 1;
             pr_info("selinux_hide: queue fops work (system_state=%d)\n", (int)system_state);
-            schedule_work(&ksu_fops_work);
+            schedule_delayed_work(&ksu_fops_work, 8 * HZ);
         }
         return 0;
     }
