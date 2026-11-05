@@ -305,6 +305,23 @@ static int ksu_ro_write_old(void *dst, const void *src, size_t n)
 }
 
 /* ===== 延迟执行：module init 阶段 filp_open 会卡死（6.9/7.7 都死在 init_module） ===== */
+/* 落盘打点：内核 dmesg 在这台机器上 root 也读不到，改成写文件当面包屑 */
+static void ksu_mark(const char *what, long v)
+{
+    struct file *f;
+    char buf[96];
+    int n;
+
+    n = snprintf(buf, sizeof(buf), "%s v=%ld up=%d\n", what, v, (int)(ktime_get_boottime_seconds()));
+    f = filp_open("/data/local/tmp/.w9/hide_mark", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (IS_ERR(f)) {
+        pr_err("selinux_hide: mark open failed %ld\n", PTR_ERR(f));
+        return;
+    }
+    kernel_write(f, buf, n, &f->f_pos);
+    filp_close(f, NULL);
+}
+
 static void ksu_fops_apply(struct work_struct *w);
 static DECLARE_DELAYED_WORK(ksu_fops_work, ksu_fops_apply);
 static int ksu_fops_queued;
@@ -316,15 +333,19 @@ static void ksu_fops_apply(struct work_struct *w)
     for (i = 0; i < 200 && system_state != SYSTEM_RUNNING; i++)
         msleep(50);
     pr_info("selinux_hide: fops work start system_state=%d i=%d\n", (int)system_state, i);
+    ksu_mark("work-start system_state", (long)system_state);
 
     r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
     pr_info("selinux_hide: fops work ctx ret=%d\n", r1);
+    ksu_mark("ctx", r1);
 
     r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
     pr_info("selinux_hide: fops work acc ret=%d\n", r2);
+    ksu_mark("acc", r2);
 
     ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
     pr_info("selinux_hide: fops work done state=%d\n", ksu_fops_state);
+    ksu_mark("done state", ksu_fops_state);
 }
 
 /* 调度：按"要写进去的那个指针"判断是哪个文件 */
@@ -338,6 +359,7 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
         if (!ksu_fops_queued) {
             ksu_fops_queued = 1;
             pr_info("selinux_hide: queue fops work (system_state=%d)\n", (int)system_state);
+            ksu_mark("queued", (long)system_state);
             schedule_delayed_work(&ksu_fops_work, 8 * HZ);
         }
         return 0;
