@@ -216,7 +216,7 @@ static struct inode *ksu_path_inode(const char *path, struct file **out)
 }
 
 static int ksu_fops_patch(const char *path, struct file_operations *copy, const struct file_operations **orig,
-                          write_op_fn new_write)
+                          void *new_write)
 {
     struct file *f = NULL;
     struct inode *in = ksu_path_inode(path, &f);
@@ -226,7 +226,15 @@ static int ksu_fops_patch(const char *path, struct file_operations *copy, const 
         return -ENOENT;
     cur = in->i_fop;
     memcpy(copy, cur, sizeof(*copy));
-    copy->write = new_write;
+    {
+        /* 内核里 write_op_fn 是老的 3 参签名，而 fops.write 是 4 参，两者强转会 -Werror，用 union 过渡 */
+        union {
+            void *p;
+            ssize_t (*f4)(struct file *, const char __user *, size_t, loff_t *);
+        } u;
+        u.p = new_write;
+        copy->write = u.f4;
+    }
     *orig = cur;
     WRITE_ONCE(in->i_fop, copy);
     filp_close(f, NULL);
@@ -302,10 +310,10 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
     if (want == (const void *)my_write_context_auto) {
         if (!ksu_fops_state)
             ksu_fops_state = 1;
-        return ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, my_write_context_auto);
+        return ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
     }
     if (want == (const void *)my_write_access_auto)
-        return ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, my_write_access_auto);
+        return ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
     if (want == (const void *)my_sel_open_handle_status) {
         /* status 目标准备换 open，但页面内容能直接改，就不必接 mmap */
         return ksu_status_scrub();
