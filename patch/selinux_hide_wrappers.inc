@@ -305,6 +305,10 @@ static int ksu_ro_write_old(void *dst, const void *src, size_t n)
 }
 
 /* ===== 延迟执行：module init 阶段 filp_open 会卡死（6.9/7.7 都死在 init_module） ===== */
+static void ksu_fops_apply(struct work_struct *w);
+static DECLARE_DELAYED_WORK(ksu_fops_work, ksu_fops_apply);
+static int ksu_fops_queued;
+
 static void ksu_fops_apply(struct work_struct *w)
 {
     int i;
