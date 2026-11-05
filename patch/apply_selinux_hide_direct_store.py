@@ -51,7 +51,11 @@ rep('    selinux_write_op = find_kernel_symbol_exact("write_op");',
     '''    selinux_write_op = find_kernel_symbol_exact("write_op");
     if (!ksu_set_memory_rw)
         ksu_set_memory_rw = (ksu_setmem_fn)find_kernel_symbol_exact("set_memory_rw");
-    pr_info("selinux_hide: set_memory_rw resolved=%d", ksu_set_memory_rw != 0);
+    if (!ksu_flush_tlb_range)
+        ksu_flush_tlb_range = (ksu_flush_range_fn)find_kernel_symbol_exact("flush_tlb_kernel_range");
+    if (!ksu_flush_tlb_range)
+        ksu_flush_tlb_range = (ksu_flush_range_fn)find_kernel_symbol_exact("__flush_tlb_kernel_range");
+    pr_info("selinux_hide: set_memory_rw=%d flush_tlb=%d", ksu_set_memory_rw != 0, ksu_flush_tlb_range != 0);
     ksu_fixmap_selftest();''', "resolve-setmem")
 
 rep("""    write_op_fn my = my_write_context;
