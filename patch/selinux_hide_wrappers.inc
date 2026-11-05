@@ -53,31 +53,60 @@ static int ksu_pte_write(void *dst, const void *src, size_t n)
 {
     unsigned long va = (unsigned long)dst;
     unsigned long want = *(const unsigned long *)src;
-    unsigned long got;
+    unsigned long got, ent, old_ent;
     pgd_t *pgd;
     p4d_t *p4d;
     pud_t *pud;
     pmd_t *pmd;
-    int flipped = 0;
-    unsigned long old_ent = 0;
+    pte_t *pte;
+    int flipped;
 
     pgd = pgd_offset(&init_mm, va);
-    if (pgd_none(*pgd) || pgd_bad(*pgd))
-        goto fail;
+    if (pgd_none(*pgd)) {
+        pr_err("selinux_hide: pte-path pgd none va=0x%lx\n", va);
+        return -ENOENT;
+    }
+    ent = pgd_val(*pgd);
+    if ((ent & KSU_PTE_TYPE_MASK) == KSU_PTE_TYPE_BLOCK) {
+        pr_err("selinux_hide: pte-path 1G block va=0x%lx ent=0x%lx (unsupported)\n", va, ent);
+        return -ENOENT;
+    }
+    if (pgd_bad(*pgd)) {
+        pr_err("selinux_hide: pte-path pgd bad va=0x%lx ent=0x%lx\n", va, ent);
+        return -ENOENT;
+    }
+
     p4d = p4d_offset(pgd, va);
     if (p4d_none(*p4d) || p4d_bad(*p4d))
-        goto fail;
+        return -ENOENT;
     pud = pud_offset(p4d, va);
-    if (pud_none(*pud) || pud_bad(*pud))
-        goto fail;
-    pmd = pmd_offset(pud, va);
-    if (pmd_none(*pmd) || pmd_bad(*pmd))
-        goto fail;
+    if (pud_none(*pud)) {
+        pr_err("selinux_hide: pte-path pud none va=0x%lx\n", va);
+        return -ENOENT;
+    }
+    ent = pud_val(*pud);
+    if ((ent & KSU_PTE_TYPE_MASK) == KSU_PTE_TYPE_BLOCK) {
+        pr_err("selinux_hide: pte-path 1G block va=0x%lx ent=0x%lx (unsupported)\n", va, ent);
+        return -ENOENT;
+    }
+    if (pud_bad(*pud)) {
+        pr_err("selinux_hide: pte-path pud bad va=0x%lx ent=0x%lx\n", va, ent);
+        return -ENOENT;
+    }
 
-    if ((pmd_val(*pmd) & KSU_PTE_TYPE_MASK) == KSU_PTE_TYPE_BLOCK) {
-        old_ent = pmd_val(*pmd);
-        if (old_ent & KSU_AP_RO_BIT) {
-            set_pmd(pmd, __pmd(old_ent & ~KSU_AP_RO_BIT));
+    pmd = pmd_offset(pud, va);
+    if (pmd_none(*pmd)) {
+        pr_err("selinux_hide: pte-path pmd none va=0x%lx\n", va);
+        return -ENOENT;
+    }
+    ent = pmd_val(*pmd);
+
+    /* 关键：2M 块映射时 pmd_bad() 为真，必须先判块再判 bad，否则永远走不到这里 */
+    if ((ent & KSU_PTE_TYPE_MASK) == KSU_PTE_TYPE_BLOCK) {
+        old_ent = ent;
+        flipped = 0;
+        if (ent & KSU_AP_RO_BIT) {
+            set_pmd(pmd, __pmd(ent & ~KSU_AP_RO_BIT));
             flipped = 1;
             ksu_tlb_flush(va);
         }
@@ -87,34 +116,36 @@ static int ksu_pte_write(void *dst, const void *src, size_t n)
             set_pmd(pmd, __pmd(old_ent));
             ksu_tlb_flush(va);
         }
-        pr_info("selinux_hide: pte-path BLOCK dst=0x%lx want=0x%lx got=0x%lx flipped=%d\n", va, want, got, flipped);
-        return got == want ? 0 : -EIO;
-    }
-
-    {
-        pte_t *pte = pte_offset_kernel(pmd, va);
-        if (!pte || !pte_present(*pte))
-            goto fail;
-        old_ent = pte_val(*pte);
-        if (old_ent & KSU_AP_RO_BIT) {
-            set_pte(pte, __pte(old_ent & ~KSU_AP_RO_BIT));
-            flipped = 1;
-            ksu_tlb_flush(va);
-        }
-        memcpy(dst, src, n);
-        got = *(volatile unsigned long *)dst;
-        if (flipped) {
-            set_pte(pte, __pte(old_ent));
-            ksu_tlb_flush(va);
-        }
-        pr_info("selinux_hide: pte-path PTE dst=0x%lx ent=0x%lx want=0x%lx got=0x%lx flipped=%d\n", va, old_ent,
+        pr_info("selinux_hide: pte-path BLOCK va=0x%lx ent=0x%lx want=0x%lx got=0x%lx flipped=%d\n", va, old_ent,
                 want, got, flipped);
         return got == want ? 0 : -EIO;
     }
+    if (pmd_bad(*pmd)) {
+        pr_err("selinux_hide: pte-path pmd bad va=0x%lx ent=0x%lx\n", va, ent);
+        return -ENOENT;
+    }
 
-fail:
-    pr_err("selinux_hide: pte-path no page table entry dst=0x%lx\n", va);
-    return -ENOENT;
+    pte = pte_offset_kernel(pmd, va);
+    if (!pte || !pte_present(*pte)) {
+        pr_err("selinux_hide: pte-path pte missing va=0x%lx\n", va);
+        return -ENOENT;
+    }
+    old_ent = pte_val(*pte);
+    flipped = 0;
+    if (old_ent & KSU_AP_RO_BIT) {
+        set_pte(pte, __pte(old_ent & ~KSU_AP_RO_BIT));
+        flipped = 1;
+        ksu_tlb_flush(va);
+    }
+    memcpy(dst, src, n);
+    got = *(volatile unsigned long *)dst;
+    if (flipped) {
+        set_pte(pte, __pte(old_ent));
+        ksu_tlb_flush(va);
+    }
+    pr_info("selinux_hide: pte-path PTE va=0x%lx ent=0x%lx want=0x%lx got=0x%lx flipped=%d\n", va, old_ent, want, got,
+            flipped);
+    return got == want ? 0 : -EIO;
 }
 
 static int ksu_fixmap_write(void *dst, const void *src, size_t n)
