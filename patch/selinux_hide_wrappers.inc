@@ -4,6 +4,7 @@
 #include <asm/tlbflush.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
+#include <linux/workqueue.h>
 
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
@@ -302,22 +303,42 @@ static int ksu_ro_write_old(void *dst, const void *src, size_t n)
     return -EIO;
 }
 
+/* ===== 延迟执行：module init 阶段 filp_open 会卡死（6.9/7.7 都死在 init_module） ===== */
+static void ksu_fops_apply(struct work_struct *w);
+
+static DECLARE_WORK(ksu_fops_work, ksu_fops_apply);
+static int ksu_fops_queued;
+
+static void ksu_fops_apply(struct work_struct *w)
+{
+    int r1, r2, r3;
+
+    pr_info("selinux_hide: fops work start system_state=%d\n", (int)system_state);
+    r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
+    pr_info("selinux_hide: fops work ctx ret=%d\n", r1);
+    r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
+    pr_info("selinux_hide: fops work acc ret=%d\n", r2);
+    r3 = ksu_status_scrub();
+    pr_info("selinux_hide: fops work status ret=%d\n", r3);
+    ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
+}
+
 /* 调度：按"要写进去的那个指针"判断是哪个文件 */
 static int ksu_ro_write(void *dst, const void *src, size_t n)
 {
     const void *want = *(const void **)src;
 
-    if (want == (const void *)my_write_context_auto) {
-        if (!ksu_fops_state)
-            ksu_fops_state = 1;
-        return ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
+    /* 主路：排队到 workqueue 里做（不要在 init/持锁上下文里碰 VFS） */
+    if (want == (const void *)my_write_context_auto || want == (const void *)my_write_access_auto ||
+        want == (const void *)my_sel_open_handle_status) {
+        if (!ksu_fops_queued) {
+            ksu_fops_queued = 1;
+            pr_info("selinux_hide: queue fops work (system_state=%d)\n", (int)system_state);
+            schedule_work(&ksu_fops_work);
+        }
+        return 0;
     }
-    if (want == (const void *)my_write_access_auto)
-        return ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
-    if (want == (const void *)my_sel_open_handle_status) {
-        /* status 目标准备换 open，但页面内容能直接改，就不必接 mmap */
-        return ksu_status_scrub();
-    }
+
     if (want == (const void *)orig_context_write) {
         ksu_fops_restore("/sys/fs/selinux/context", ksu_ctx_orig);
         ksu_ctx_orig = NULL;
