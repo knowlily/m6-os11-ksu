@@ -3,6 +3,7 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <linux/mm.h>
+#include <linux/fs.h>
 
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
@@ -181,30 +182,146 @@ static void ksu_fixmap_selftest(void)
             ksu_selftest_slot, val, r);
 }
 
-static int ksu_ro_write(void *dst, const void *src, size_t n)
-{
-    unsigned long first = (unsigned long)dst & PAGE_MASK;
-    unsigned long last = ((unsigned long)dst + n - 1) & PAGE_MASK;
-    int pages = (int)((last - first) / PAGE_SIZE) + 1;
-    int r;
+/* ===== FOPS-PATH：不碰内核镜像，改 inode->i_fop（inode 是堆上的，可写） =====
+ * 内核镜像页有 stage-2 级写保护（patch_text/memcpy/set_memory_rw/fixmap/翻AP[2] 全试过，
+ * 都是 ret=0 但回读旧值）。但 selinuxfs 的 struct inode 是运行时 kmalloc 出来的，
+ * inode->i_fop 只是个普通指针字段。把 /sys/fs/selinux/{context,access} 的 inode 上的
+ * i_fop 换成我们自己的 struct file_operations 副本（放在模块 .bss），就绕开了整个镜像。
+ */
+ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos);
+ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos);
 
-    r = ksu_pte_write(dst, src, n);
+static struct file_operations ksu_ctx_ops;
+static struct file_operations ksu_acc_ops;
+static const struct file_operations *ksu_ctx_orig;
+static const struct file_operations *ksu_acc_orig;
+static int ksu_fops_state; /* 0=未装 1=已装 */
+
+static struct inode *ksu_path_inode(const char *path, struct file **out)
+{
+    struct file *f = filp_open(path, O_RDONLY, 0);
+    struct inode *in;
+    if (IS_ERR(f)) {
+        pr_err("selinux_hide: fops open %s failed %ld\n", path, PTR_ERR(f));
+        return NULL;
+    }
+    in = file_inode(f);
+    if (!in || !in->i_fop) {
+        filp_close(f, NULL);
+        return NULL;
+    }
+    if (out)
+        *out = f;
+    return in;
+}
+
+static int ksu_fops_patch(const char *path, struct file_operations *copy, const struct file_operations **orig,
+                          write_op_fn new_write)
+{
+    struct file *f = NULL;
+    struct inode *in = ksu_path_inode(path, &f);
+    const struct file_operations *cur;
+
+    if (!in)
+        return -ENOENT;
+    cur = in->i_fop;
+    memcpy(copy, cur, sizeof(*copy));
+    copy->write = new_write;
+    *orig = cur;
+    WRITE_ONCE(in->i_fop, copy);
+    filp_close(f, NULL);
+    pr_info("selinux_hide: fops %s: inode=0x%lx orig_fop=0x%lx ours=0x%lx\n", path, (unsigned long)in,
+            (unsigned long)cur, (unsigned long)copy);
+    return 0;
+}
+
+static int ksu_fops_restore(const char *path, const struct file_operations *orig)
+{
+    struct file *f = NULL;
+    struct inode *in;
+
+    if (!orig)
+        return 0;
+    in = ksu_path_inode(path, &f);
+    if (!in)
+        return -ENOENT;
+    WRITE_ONCE(in->i_fop, orig);
+    filp_close(f, NULL);
+    pr_info("selinux_hide: fops %s restored to 0x%lx\n", path, (unsigned long)orig);
+    return 0;
+}
+
+/* status 页是普通内核页（可写），直接改字段，不用 hook */
+typedef struct page *(*ksu_status_page_fn)(void);
+
+static int ksu_status_scrub(void)
+{
+    ksu_status_page_fn fn;
+    struct page *pg;
+    u32 *sp;
+
+    fn = (ksu_status_page_fn)find_kernel_symbol_exact("selinux_kernel_status_page");
+    if (!fn) {
+        pr_err("selinux_hide: status_scrub: no selinux_kernel_status_page\n");
+        return -ENOSYS;
+    }
+    pg = fn();
+    if (!pg) {
+        pr_err("selinux_hide: status_scrub: page null\n");
+        return -ENOENT;
+    }
+    sp = (u32 *)page_address(pg);
+    if (!sp || sp[0] != 1) {
+        pr_err("selinux_hide: status_scrub: bad page 0x%lx\n", (unsigned long)sp);
+        return -EINVAL;
+    }
+    pr_info("selinux_hide: status before ver=%u seq=%u enf=%u pl=%u dn=%u\n", sp[0], sp[1], sp[2], sp[3], sp[4]);
+    sp[1] = 1;
+    sp[3] = 0;
+    pr_info("selinux_hide: status after seq=%u pl=%u\n", sp[1], sp[3]);
+    return 0;
+}
+
+/* 老路：镜像写（本机全部无效，保留做对照日志） */
+static int ksu_ro_write_old(void *dst, const void *src, size_t n)
+{
+    int r = ksu_pte_write(dst, src, n);
     if (!r)
         return 0;
-
     r = ksu_fixmap_write(dst, src, n);
     if (!r)
         return 0;
+    return -EIO;
+}
 
-    if (!ksu_set_memory_rw) {
-        pr_err("selinux_hide: all write paths failed\n");
-        return -ENOSYS;
+/* 调度：按"要写进去的那个指针"判断是哪个文件 */
+static int ksu_ro_write(void *dst, const void *src, size_t n)
+{
+    const void *want = *(const void **)src;
+
+    if (want == (const void *)my_write_context_auto) {
+        if (!ksu_fops_state)
+            ksu_fops_state = 1;
+        return ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, my_write_context_auto);
     }
-    r = ksu_set_memory_rw(first, pages);
-    if (r)
-        return r;
-    memcpy(dst, src, n);
-    return (*(volatile unsigned long *)dst == *(const unsigned long *)src) ? 0 : -EIO;
+    if (want == (const void *)my_write_access_auto)
+        return ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, my_write_access_auto);
+    if (want == (const void *)my_sel_open_handle_status) {
+        /* status 目标准备换 open，但页面内容能直接改，就不必接 mmap */
+        return ksu_status_scrub();
+    }
+    if (want == (const void *)orig_context_write) {
+        ksu_fops_restore("/sys/fs/selinux/context", ksu_ctx_orig);
+        ksu_ctx_orig = NULL;
+        return 0;
+    }
+    if (want == (const void *)orig_access_write) {
+        ksu_fops_restore("/sys/fs/selinux/access", ksu_acc_orig);
+        ksu_acc_orig = NULL;
+        return 0;
+    }
+    pr_info("selinux_hide: ro_write unknown want=0x%lx slot=0x%lx\n", (unsigned long)want, (unsigned long)dst);
+    return ksu_ro_write_old(dst, src, n);
 }
 
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
