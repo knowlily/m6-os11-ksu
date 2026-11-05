@@ -193,11 +193,11 @@ static void ksu_fixmap_selftest(void)
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos);
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos);
 
-static struct file_operations ksu_ctx_ops;
-static struct file_operations ksu_acc_ops;
+static __maybe_unused struct file_operations ksu_ctx_ops;
+static __maybe_unused struct file_operations ksu_acc_ops;
 static const struct file_operations *ksu_ctx_orig;
 static const struct file_operations *ksu_acc_orig;
-static int ksu_fops_state; /* 0=未装 1=已装 */
+static __maybe_unused int ksu_fops_state; /* 0=未装 1=已装 */
 
 static struct inode *ksu_path_inode(const char *path, struct file **out)
 {
