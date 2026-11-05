@@ -326,26 +326,28 @@ static void ksu_fops_apply(struct work_struct *w);
 static DECLARE_DELAYED_WORK(ksu_fops_work, ksu_fops_apply);
 static int ksu_fops_queued;
 
+static void ksu_fops_do(void)
+{
+    int r1, r2;
+
+    ksu_mark("do-start", (long)system_state);
+    r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
+    ksu_mark("do-ctx", r1);
+    r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
+    ksu_mark("do-acc", r2);
+    ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
+    ksu_mark("do-done", ksu_fops_state);
+    pr_info("selinux_hide: fops do ctx=%d acc=%d state=%d\n", r1, r2, ksu_fops_state);
+}
+
 static void ksu_fops_apply(struct work_struct *w)
 {
-    int i, r1, r2;
+    int i;
 
     for (i = 0; i < 200 && system_state != SYSTEM_RUNNING; i++)
         msleep(50);
-    pr_info("selinux_hide: fops work start system_state=%d i=%d\n", (int)system_state, i);
-    ksu_mark("work-start system_state", (long)system_state);
-
-    r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
-    pr_info("selinux_hide: fops work ctx ret=%d\n", r1);
-    ksu_mark("ctx", r1);
-
-    r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
-    pr_info("selinux_hide: fops work acc ret=%d\n", r2);
-    ksu_mark("acc", r2);
-
-    ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
-    pr_info("selinux_hide: fops work done state=%d\n", ksu_fops_state);
-    ksu_mark("done state", ksu_fops_state);
+    ksu_mark("work-start", (long)system_state);
+    ksu_fops_do();
 }
 
 /* 调度：按"要写进去的那个指针"判断是哪个文件 */
@@ -358,9 +360,15 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
         want == (const void *)my_sel_open_handle_status) {
         if (!ksu_fops_queued) {
             ksu_fops_queued = 1;
-            pr_info("selinux_hide: queue fops work (system_state=%d)\n", (int)system_state);
             ksu_mark("queued", (long)system_state);
-            schedule_delayed_work(&ksu_fops_work, 8 * HZ);
+            if (system_state == SYSTEM_RUNNING) {
+                /* ksud 上下文里就地做：能写 /data/local/tmp，也不用等 workqueue */
+                ksu_mark("inline", (long)system_state);
+                ksu_fops_do();
+            } else {
+                pr_info("selinux_hide: not running(%d), defer 8s\n", (int)system_state);
+                schedule_delayed_work(&ksu_fops_work, 8 * HZ);
+            }
         }
         return 0;
     }
