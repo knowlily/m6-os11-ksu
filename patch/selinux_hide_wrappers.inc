@@ -305,25 +305,25 @@ static int ksu_ro_write_old(void *dst, const void *src, size_t n)
 }
 
 /* ===== 延迟执行：module init 阶段 filp_open 会卡死（6.9/7.7 都死在 init_module） ===== */
-static void ksu_fops_apply(struct work_struct *w);
-
-static DECLARE_DELAYED_WORK(ksu_fops_work, ksu_fops_apply);
-static int ksu_fops_queued;
-
 static void ksu_fops_apply(struct work_struct *w)
 {
-    int r1, r2, r3, i;
+    int i;
+    struct file *f;
+    struct inode *in;
 
     for (i = 0; i < 200 && system_state != SYSTEM_RUNNING; i++)
         msleep(50);
-    pr_info("selinux_hide: fops work start system_state=%d i=%d\n", (int)system_state, i);
-    r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
-    pr_info("selinux_hide: fops work ctx ret=%d\n", r1);
-    r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
-    pr_info("selinux_hide: fops work acc ret=%d\n", r2);
-    r3 = ksu_status_scrub();
-    pr_info("selinux_hide: fops work status ret=%d\n", r3);
-    ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
+    pr_info("selinux_hide: probe start system_state=%d i=%d\n", (int)system_state, i);
+
+    f = filp_open("/sys/fs/selinux/context", O_RDONLY, 0);
+    pr_info("selinux_hide: probe filp_open ret=%ld\n", IS_ERR(f) ? PTR_ERR(f) : 0L);
+    if (!IS_ERR(f)) {
+        in = file_inode(f);
+        pr_info("selinux_hide: probe inode=0x%lx i_fop=0x%lx\n", (unsigned long)in, in ? (unsigned long)in->i_fop : 0UL);
+        filp_close(f, NULL);
+        pr_info("selinux_hide: probe closed ok\n");
+    }
+    pr_info("selinux_hide: probe done\n");
 }
 
 /* 调度：按"要写进去的那个指针"判断是哪个文件 */
