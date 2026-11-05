@@ -228,7 +228,7 @@ static int ksu_fops_patch(const char *path, struct file_operations *copy, const 
         return -ENOENT;
     cur = in->i_fop;
     memcpy(copy, cur, sizeof(*copy));
-    {
+    if (new_write) {
         /* 内核里 write_op_fn 是老的 3 参签名，而 fops.write 是 4 参，两者强转会 -Werror，用 union 过渡 */
         union {
             void *p;
@@ -236,7 +236,7 @@ static int ksu_fops_patch(const char *path, struct file_operations *copy, const 
         } u;
         u.p = new_write;
         copy->write = u.f4;
-    }
+    } /* new_write==NULL：只换指针、不动 write，做 A/B 对照 */
     *orig = cur;
     WRITE_ONCE(in->i_fop, copy);
     filp_close(f, NULL);
@@ -319,6 +319,7 @@ static void ksu_mark(const char *what, long v)
         return;
     }
     kernel_write(f, buf, n, &f->f_pos);
+    vfs_fsync(f, 0); /* panic 也不丢：不然会只剩一堆 \0 */
     filp_close(f, NULL);
 }
 
@@ -326,14 +327,21 @@ static void ksu_fops_apply(struct work_struct *w);
 static DECLARE_DELAYED_WORK(ksu_fops_work, ksu_fops_apply);
 static int ksu_fops_queued;
 
+/* A/B 开关：0 = 只把 i_fop 指向模块里的副本（write 仍是原函数），1 = 换成我们的 hook */
+#ifndef KSU_FOPS_WRAP
+#define KSU_FOPS_WRAP 0
+#endif
+
 static void ksu_fops_do(void)
 {
     int r1, r2;
 
     ksu_mark("do-start", (long)system_state);
-    r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig, (void *)my_write_context_auto);
+    r1 = ksu_fops_patch("/sys/fs/selinux/context", &ksu_ctx_ops, &ksu_ctx_orig,
+                        KSU_FOPS_WRAP ? (void *)my_write_context_auto : NULL);
     ksu_mark("do-ctx", r1);
-    r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig, (void *)my_write_access_auto);
+    r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig,
+                        KSU_FOPS_WRAP ? (void *)my_write_access_auto : NULL);
     ksu_mark("do-acc", r2);
     ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
     ksu_mark("do-done", ksu_fops_state);
