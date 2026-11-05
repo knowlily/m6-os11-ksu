@@ -389,58 +389,30 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
 
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
-    char *kbuf;
-    int from_user = 1;
-    ssize_t ret;
+    /*
+     * 关键（8.5 的教训）：stock 的 my_write_context() 内部是 memdup_user_nul(buf)，
+     * 它要的是【用户指针】。8.5 先 copy_from_user 到内核缓冲再传进去 → memdup_user_nul
+     * 从内核地址拷 → EFAULT → security_check_context() 失败 → zygote 里
+     * selinux_android_setcontext() 失败 → 所有 App 起不来（SIGABRT）。
+     * 所以这里直接把用户指针透传给 stock hook，不做任何拷贝。
+     *
+     * 另一个坑：fops 路线没有走 sel_handle_status_ops 的槽位替换，orig_context_write
+     * 可能是 NULL，必须回落到 i_fop 副本里的原始 write。
+     */
+    if (likely(current_uid().val < 10000) || !backup_sepolicy || !ksu_ctx_orig || !ksu_ctx_orig->write)
+        return (ksu_ctx_orig && ksu_ctx_orig->write)
+                   ? ksu_ctx_orig->write(file, ubuf, size, ppos)
+                   : (orig_context_write ? ksu_call_orig(orig_context_write, file, ubuf, size, ppos) : -EINVAL);
 
-    if (likely(current_uid().val < 10000))
-        return orig_context_write ? ksu_call_orig(orig_context_write, file, ubuf, size, ppos) : -EINVAL;
-    if (!backup_sepolicy)
-        return ksu_call_orig(orig_context_write, file, ubuf, size, ppos);
-    if (size == 0 || size > 4096)
-        return -EINVAL;
-
-    kbuf = kmalloc(size + 1, GFP_KERNEL);
-    if (!kbuf)
-        return -ENOMEM;
-    if (copy_from_user(kbuf, ubuf, size)) {
-        memcpy(kbuf, ubuf, size);
-        from_user = 0;
-    }
-    kbuf[size] = 0;
-    ret = my_write_context(file, kbuf, size);
-    if (ret > 0 && from_user) {
-        if (copy_to_user((char __user *)ubuf, kbuf, ret))
-            ret = -EFAULT;
-    }
-    pr_info("selinux_hide: ctx-auto uid=%d size=%zu user=%d ret=%zd\n", current_uid().val, size, from_user, ret);
-    kfree(kbuf);
-    return ret;
+    return my_write_context(file, (char __user *)ubuf, size);
 }
 
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
-    char *kbuf;
-    int from_user = 1;
-    ssize_t ret;
+    if (likely(current_uid().val < 10000) || !backup_sepolicy || !ksu_acc_orig || !ksu_acc_orig->write)
+        return (ksu_acc_orig && ksu_acc_orig->write)
+                   ? ksu_acc_orig->write(file, ubuf, size, ppos)
+                   : (orig_access_write ? ksu_call_orig(orig_access_write, file, ubuf, size, ppos) : -EINVAL);
 
-    if (likely(current_uid().val < 10000))
-        return orig_access_write ? ksu_call_orig(orig_access_write, file, ubuf, size, ppos) : -EINVAL;
-    if (!backup_sepolicy)
-        return ksu_call_orig(orig_access_write, file, ubuf, size, ppos);
-    if (size == 0 || size > 4096)
-        return -EINVAL;
-
-    kbuf = kmalloc(size + 1, GFP_KERNEL);
-    if (!kbuf)
-        return -ENOMEM;
-    if (copy_from_user(kbuf, ubuf, size)) {
-        memcpy(kbuf, ubuf, size);
-        from_user = 0;
-    }
-    kbuf[size] = 0;
-    ret = my_write_access(file, kbuf, size);
-    pr_info("selinux_hide: acc-auto uid=%d size=%zu user=%d ret=%zd\n", current_uid().val, size, from_user, ret);
-    kfree(kbuf);
-    return ret;
+    return my_write_access(file, (char __user *)ubuf, size);
 }
