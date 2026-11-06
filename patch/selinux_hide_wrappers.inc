@@ -395,6 +395,25 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
     return ksu_ro_write_old(dst, src, n);
 }
 
+/* 关键字黑名单：检测器就是拿候选串去问 security_check_context()，
+ * 我们直接回答 -EINVAL 就够了，不必依赖 backup_sepolicy（这台机器上它多半是 NULL）。 */
+static const char *const ksu_hidden_tokens[] = {"ksu", "magisk", "lsposed"};
+
+static int ksu_hit_hidden(const char *buf, size_t size)
+{
+    size_t i, t;
+
+    for (t = 0; t < ARRAY_SIZE(ksu_hidden_tokens); t++) {
+        size_t n = strlen(ksu_hidden_tokens[t]);
+        if (n > size)
+            continue;
+        for (i = 0; i + n <= size; i++)
+            if (!memcmp(buf + i, ksu_hidden_tokens[t], n))
+                return 1;
+    }
+    return 0;
+}
+
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     /*
@@ -405,8 +424,7 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
      *    它内部是 security_context_to_sid_with_policy(backup, buf, ...)，buf 当【内核】指针用；
      *    直接把用户指针递进去 → 内核读 TTBR0 → pan 域 fault → panic（8.6 就是这么炸的）。
      */
-    if (likely(current_uid().val < 10000) || unlikely(!backup_sepolicy) || !ksu_ctx_orig ||
-        !ksu_ctx_orig->write)
+    if (likely(current_uid().val < 10000) || !ksu_ctx_orig || !ksu_ctx_orig->write)
         return (ksu_ctx_orig && ksu_ctx_orig->write)
                    ? ksu_ctx_orig->write(file, ubuf, size, ppos)
                    : (orig_context_write ? ksu_call_orig(orig_context_write, file, ubuf, size, ppos) : -EINVAL);
@@ -424,6 +442,10 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
             return -EFAULT;
         }
         kbuf[size] = 0;
+        if (ksu_hit_hidden(kbuf, size)) { /* 黑名单：直接判无效 */
+            kfree(kbuf);
+            return -EINVAL;
+        }
         ret = my_write_context(file, kbuf, size);
         if (ret > 0 && copy_to_user((char __user *)ubuf, kbuf, ret))
             ret = -EFAULT;
@@ -434,8 +456,7 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
 
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
-    if (likely(current_uid().val < 10000) || unlikely(!backup_sepolicy) || !ksu_acc_orig ||
-        !ksu_acc_orig->write)
+    if (likely(current_uid().val < 10000) || !ksu_acc_orig || !ksu_acc_orig->write)
         return (ksu_acc_orig && ksu_acc_orig->write)
                    ? ksu_acc_orig->write(file, ubuf, size, ppos)
                    : (orig_access_write ? ksu_call_orig(orig_access_write, file, ubuf, size, ppos) : -EINVAL);
@@ -453,6 +474,10 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
             return -EFAULT;
         }
         kbuf[size] = 0;
+        if (ksu_hit_hidden(kbuf, size)) {
+            kfree(kbuf);
+            return -EINVAL;
+        }
         ret = my_write_access(file, kbuf, size);
         if (ret > 0 && copy_to_user((char __user *)ubuf, kbuf, ret))
             ret = -EFAULT;
