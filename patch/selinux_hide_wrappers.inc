@@ -329,7 +329,7 @@ static int ksu_fops_queued;
 
 /* A/B 开关：0 = 只把 i_fop 指向模块里的副本（write 仍是原函数），1 = 换成我们的 hook */
 #ifndef KSU_FOPS_WRAP
-#define KSU_FOPS_WRAP 0
+#define KSU_FOPS_WRAP 1
 #endif
 
 static void ksu_fops_do(void)
@@ -398,29 +398,65 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     /*
-     * 关键（8.5 的教训）：stock 的 my_write_context() 内部是 memdup_user_nul(buf)，
-     * 它要的是【用户指针】。8.5 先 copy_from_user 到内核缓冲再传进去 → memdup_user_nul
-     * 从内核地址拷 → EFAULT → security_check_context() 失败 → zygote 里
-     * selinux_android_setcontext() 失败 → 所有 App 起不来（SIGABRT）。
-     * 所以这里直接把用户指针透传给 stock hook，不做任何拷贝。
-     *
-     * 另一个坑：fops 路线没有走 sel_handle_status_ops 的槽位替换，orig_context_write
-     * 可能是 NULL，必须回落到 i_fop 副本里的原始 write。
+     * 两个坑，缺一不可（8.5/8.6 各踩一个）：
+     * 1) 非 app uid 必须走【真·原函数】：fops 路线不设 orig_context_write，所以回落 i_fop 副本里的原 write。
+     *    否则 uid<10000 全 -EINVAL → zygote 的 selinux_android_setcontext() 失败 → 所有 App SIGABRT。
+     * 2) app uid 必须先把用户串拷到内核缓冲，再交给 stock 的 my_write_context()：
+     *    它内部是 security_context_to_sid_with_policy(backup, buf, ...)，buf 当【内核】指针用；
+     *    直接把用户指针递进去 → 内核读 TTBR0 → pan 域 fault → panic（8.6 就是这么炸的）。
      */
-    if (likely(current_uid().val < 10000) || !backup_sepolicy || !ksu_ctx_orig || !ksu_ctx_orig->write)
+    if (likely(current_uid().val < 10000) || unlikely(!backup_sepolicy) || !ksu_ctx_orig ||
+        !ksu_ctx_orig->write)
         return (ksu_ctx_orig && ksu_ctx_orig->write)
                    ? ksu_ctx_orig->write(file, ubuf, size, ppos)
                    : (orig_context_write ? ksu_call_orig(orig_context_write, file, ubuf, size, ppos) : -EINVAL);
+    {
+        char *kbuf;
+        ssize_t ret;
 
-    return my_write_context(file, (char __user *)ubuf, size);
+        if (size == 0 || size > 4096)
+            return -EINVAL;
+        kbuf = kmalloc(size + 1, GFP_KERNEL);
+        if (!kbuf)
+            return -ENOMEM;
+        if (copy_from_user(kbuf, ubuf, size)) {
+            kfree(kbuf);
+            return -EFAULT;
+        }
+        kbuf[size] = 0;
+        ret = my_write_context(file, kbuf, size);
+        if (ret > 0 && copy_to_user((char __user *)ubuf, kbuf, ret))
+            ret = -EFAULT;
+        kfree(kbuf);
+        return ret;
+    }
 }
 
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
-    if (likely(current_uid().val < 10000) || !backup_sepolicy || !ksu_acc_orig || !ksu_acc_orig->write)
+    if (likely(current_uid().val < 10000) || unlikely(!backup_sepolicy) || !ksu_acc_orig ||
+        !ksu_acc_orig->write)
         return (ksu_acc_orig && ksu_acc_orig->write)
                    ? ksu_acc_orig->write(file, ubuf, size, ppos)
                    : (orig_access_write ? ksu_call_orig(orig_access_write, file, ubuf, size, ppos) : -EINVAL);
+    {
+        char *kbuf;
+        ssize_t ret;
 
-    return my_write_access(file, (char __user *)ubuf, size);
+        if (size == 0 || size > 4096)
+            return -EINVAL;
+        kbuf = kmalloc(size + 1, GFP_KERNEL);
+        if (!kbuf)
+            return -ENOMEM;
+        if (copy_from_user(kbuf, ubuf, size)) {
+            kfree(kbuf);
+            return -EFAULT;
+        }
+        kbuf[size] = 0;
+        ret = my_write_access(file, kbuf, size);
+        if (ret > 0 && copy_to_user((char __user *)ubuf, kbuf, ret))
+            ret = -EFAULT;
+        kfree(kbuf);
+        return ret;
+    }
 }
