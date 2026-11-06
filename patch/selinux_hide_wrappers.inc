@@ -842,7 +842,9 @@ struct ksu_pair_sig {
 static const struct ksu_pair_sig ksu_pair_sigs[] = {
     /* 以下 9 条全部来自 yaml 反编译 DirtySepolicy 的 AppZygote.smali，
      * 是它 Li.b() 调用的真实 (scon,tcon) 组合（第 1 条 self->self setcurrent 故意不拦，
-     * 干净机上它是 true，拦了反而会冒出 ERROR: /proc/self context mismatch）。 */
+     * 干净机上它是 true，拦了反而会冒出 ERROR: /proc/self context mismatch）；
+     * self->kernel security/check_context 同理 —— 它是「查询通道自检」，干净机也 true，
+     * 拦了 AppZygote 会直接 return "ERROR: cannot check SELinux context"，后面全不跑。 */
     {"system_server", "system_server"},   /* process/execmem */
     {"shell", "su"},                      /* process/transition */
     {"rootfs", "tmpfs"},                  /* filesystem/associate */
@@ -851,7 +853,6 @@ static const struct ksu_pair_sig ksu_pair_sigs[] = {
     {"system_server", "apk_data_file"},   /* file/execute —— LSPosed */
     {"dex2oat", "dex2oat_exec"},          /* file/execute_no_trans —— Xposed */
     {"zygote", "adb_data_file"},          /* dir/search   —— ZygiskNext */
-    {"app_zygote", "kernel"},             /* security/check_context */
 };
 static int ksu_has_sub(const char *buf, size_t size, const char *needle)
 {
