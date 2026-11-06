@@ -858,6 +858,23 @@ static int ksu_has_sub(const char *buf, size_t size, const char *needle)
             return 1;
     return 0;
 }
+/* 把 stock 写回的 allowed 位图清零：对方拿到的是一条合法响应，只是权限全判否，
+ * 形状和干净机一致（干净机上这些类型对本来就不允许）。
+ * file->private_data 是 simple_transaction_get() 分配的
+ *   struct simple_transaction_argresp { ssize_t size; char data[]; };
+ * 64 位上 data 从 +8 开始，内容是 "%x %x %x %x %x %x\n"，第一个词就是 allowed。 */
+static void ksu_zero_allowed(struct file *file, ssize_t rv)
+{
+    char *ar = (char *)file->private_data;
+    char *d;
+    ssize_t i;
+
+    if (!ar || rv <= 9)
+        return;
+    d = ar + sizeof(ssize_t);
+    for (i = 0; i < rv - (ssize_t)sizeof(ssize_t) && d[i] != ' ' && d[i] != '\n'; i++)
+        d[i] = '0';
+}
 static int ksu_pair_denied(const char *buf, size_t size)
 {
     size_t i;
@@ -904,10 +921,16 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         }
         ok = ksu_ctx_allowed(kbuf, size);
         ksu_hook_log("HACC", kbuf, size, ok);
-        if (ok && ksu_pair_denied(kbuf, size)) { /* 规则层：按干净机的答案回 denied */
-            pr_info("selinux_hide: rule deny uid=%d\n", current_uid().val);
+        if (ok && ksu_pair_denied(kbuf, size)) { /* 规则层：照常算，但把 allowed 位图清零 */
+            ssize_t rv2;
+            pr_info("selinux_hide: pair deny uid=%d\n", current_uid().val);
             kfree(kbuf);
-            return -EACCES;
+            rv2 = orig->write(file, ubuf, size, ppos);
+            if (rv2 > 0) {
+                ksu_zero_allowed(file, rv2);
+                return rv2;
+            }
+            return -EINVAL; /* 兜底：EINVAL 对方当「不存在」，同样静默 */
         }
         if (!ok)
             pr_info("selinux_hide: access deny uid=%d '%s'\n", current_uid().val, kbuf);
