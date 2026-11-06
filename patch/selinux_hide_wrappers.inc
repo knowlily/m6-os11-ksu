@@ -802,6 +802,55 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
     return orig->write(file, ubuf, size, ppos);
 }
 
+/*
+ * ===== 规则层面的指纹 =====
+ * 真相源只挡「类型不存在」，挡不住「类型都在出厂策略里、但模块给它们加了 allow」这种规则泄漏。
+ * DirtySepolicy 的几条（反编译 AppZygote 看到的原文）：
+ *   system_server -> system_server process execmem
+ *   rootfs -> tmpfs filesystem associate
+ *   <ctx> -> tmpfs fifo_file open
+ *   zygote -> <dir> dir search
+ *   <ctx> -> apk_data_file file execute
+ *   dex2oat -> dex2oat_exec file execute_no_trans
+ * 干净机上这些一律 denied，所以 app 来问就直接按 denied 回（-EACCES；对方的 b() 只把 EINVAL
+ * 当「静默的不存在」，其它错误也返回 false，两条都是「没找到」）。
+ */
+struct ksu_rule_sig {
+    const char *a;
+    const char *b;
+};
+
+static const struct ksu_rule_sig ksu_rule_sigs[] = {
+    {"system_server:s0", "execmem"},
+    {"rootfs:s0", "associate"},
+    {"tmpfs:s0", "fifo_file"},
+    {"zygote:s0", "search"},
+    {"apk_data_file:s0", "execute"},
+    {"dex2oat", "execute_no_trans"},
+};
+
+static int ksu_has_sub(const char *buf, size_t size, const char *needle)
+{
+    size_t n = strlen(needle), i;
+
+    if (n > size)
+        return 0;
+    for (i = 0; i + n <= size; i++)
+        if (!memcmp(buf + i, needle, n))
+            return 1;
+    return 0;
+}
+
+static int ksu_rule_denied(const char *buf, size_t size)
+{
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(ksu_rule_sigs); i++) {
+        if (ksu_has_sub(buf, size, ksu_rule_sigs[i].a) && ksu_has_sub(buf, size, ksu_rule_sigs[i].b))
+            return 1;
+    }
+    return 0;
+}
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     const struct file_operations *orig = ksu_acc_orig;
@@ -828,6 +877,11 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         kbuf[size] = 0;
         ok = ksu_ctx_allowed(kbuf, size);
         ksu_hook_log("HACC", kbuf, size, ok);
+        if (ok && ksu_rule_denied(kbuf, size)) { /* 规则指纹：按干净机的答案回 denied */
+            pr_info("selinux_hide: rule deny uid=%d\n", current_uid().val);
+            kfree(kbuf);
+            return -EACCES;
+        }
         if (!ok)
             pr_info("selinux_hide: access deny uid=%d '%s'\n", current_uid().val, kbuf);
         kfree(kbuf);
