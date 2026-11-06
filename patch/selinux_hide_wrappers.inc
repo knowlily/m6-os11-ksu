@@ -822,30 +822,29 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
 }
 
 /*
- * ===== 规则层面的指纹 =====
- * 真相源只挡「类型不存在」，挡不住「类型都在出厂策略里、但模块给它们加了 allow」这种规则泄漏。
- * DirtySepolicy 的几条（反编译 AppZygote 看到的原文）：
- *   system_server -> system_server process execmem
- *   rootfs -> tmpfs filesystem associate
- *   <ctx> -> tmpfs fifo_file open
- *   zygote -> <dir> dir search
- *   <ctx> -> apk_data_file file execute
- *   dex2oat -> dex2oat_exec file execute_no_trans
- * 干净机上这些一律 denied，所以 app 来问就直接按 denied 回（-EACCES；对方的 b() 只把 EINVAL
- * 当「静默的不存在」，其它错误也返回 false，两条都是「没找到」）。
+ * ===== 访问判定的规则层拦截 =====
+ * 关键：/sys/fs/selinux/access 的请求体只有「scon tcon tclass」三个字段，
+ * 权限是位图编号，字符串里根本没有 execmem / search 这类词 —— 所以按关键字匹配永远不命中。
+ * 只能按 (scon, tcon) 类型对拦。下面是 DirtySepolicy 在真机上实测仍返回 ALLOWED=true 的三条，
+ * 加上 KSU/root 常见探针：
+ *   system_server -> system_server  (process/execmem)
+ *   zygote        -> system_file     (dir/search)
+ *   *             -> apk_data_file   (file/execute)
+ *   zygote        -> adb_data_file   (file/read)
+ *   shell         -> su              (process/transition)
+ * 干净机上这些都是 denied，所以 app 来问直接回 -EACCES（它的 b() 对非 EINVAL 错误也返回 false）。
  */
-struct ksu_rule_sig {
-    const char *a;
-    const char *b;
+struct ksu_pair_sig {
+    const char *scon;
+    const char *tcon;
 };
 
-static const struct ksu_rule_sig ksu_rule_sigs[] = {
-    {"system_server:s0", "execmem"},
-    {"rootfs:s0", "associate"},
-    {"tmpfs:s0", "fifo_file"},
-    {"zygote:s0", "search"},
-    {"apk_data_file:s0", "execute"},
-    {"dex2oat", "execute_no_trans"},
+static const struct ksu_pair_sig ksu_pair_sigs[] = {
+    {"system_server", "system_server"},
+    {"zygote", "system_file"},
+    {"", "apk_data_file"},
+    {"zygote", "adb_data_file"},
+    {"shell", "su"},
 };
 
 static int ksu_has_sub(const char *buf, size_t size, const char *needle)
@@ -859,14 +858,19 @@ static int ksu_has_sub(const char *buf, size_t size, const char *needle)
             return 1;
     return 0;
 }
-
-static int ksu_rule_denied(const char *buf, size_t size)
+static int ksu_pair_denied(const char *buf, size_t size)
 {
     size_t i;
 
-    for (i = 0; i < ARRAY_SIZE(ksu_rule_sigs); i++) {
-        if (ksu_has_sub(buf, size, ksu_rule_sigs[i].a) && ksu_has_sub(buf, size, ksu_rule_sigs[i].b))
-            return 1;
+    for (i = 0; i < ARRAY_SIZE(ksu_pair_sigs); i++) {
+        const char *scon = ksu_pair_sigs[i].scon;
+        const char *tcon = ksu_pair_sigs[i].tcon;
+
+        if (scon[0] && !ksu_has_sub(buf, size, scon))
+            continue;
+        if (tcon[0] && !ksu_has_sub(buf, size, tcon))
+            continue;
+        return 1;
     }
     return 0;
 }
@@ -900,7 +904,7 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         }
         ok = ksu_ctx_allowed(kbuf, size);
         ksu_hook_log("HACC", kbuf, size, ok);
-        if (ok && ksu_rule_denied(kbuf, size)) { /* 规则指纹：按干净机的答案回 denied */
+        if (ok && ksu_pair_denied(kbuf, size)) { /* 规则层：按干净机的答案回 denied */
             pr_info("selinux_hide: rule deny uid=%d\n", current_uid().val);
             kfree(kbuf);
             return -EACCES;
