@@ -700,10 +700,34 @@ static int ksu_type_allowed(const char *t, size_t n)
     return ksu_type_allowed_whitelist(t, n);
 }
 
+/* 关键字兜底：这几个名字是「注入型」的典型，任何情况下都不该从 app 那里看得到。
+ * 真相源应该已经挡住它们了，这里是第二道闸 —— 也用来分辨
+ * 「hook 根本没被调用」和「真相源判错了」（真机没有 dmesg，只能靠行为差异取证）。 */
+static const char *const ksu_extra_hidden[] = {"ksu", "magisk", "lsposed", "xposed", "zygisk", "adbroot"};
+
+static int ksu_hit_extra_hidden(const char *buf, size_t size)
+{
+    size_t i, t;
+
+    for (t = 0; t < ARRAY_SIZE(ksu_extra_hidden); t++) {
+        size_t n = strlen(ksu_extra_hidden[t]);
+
+        if (n > size)
+            continue;
+        for (i = 0; i + n <= size; i++)
+            if (!memcmp(buf + i, ksu_extra_hidden[t], n))
+                return 1;
+    }
+    return 0;
+}
+
 /* 返回 1 = 放行；0 = 里面出现了出厂策略里不存在的类型（判定为「该类型不存在」） */
 static int ksu_ctx_allowed(const char *buf, size_t size)
 {
     const char *p = buf, *end = buf + size;
+
+    if (ksu_hit_extra_hidden(buf, size))
+        return 0;
 
     while (p < end) {
         const char *sp = memchr(p, ' ', (size_t)(end - p));
