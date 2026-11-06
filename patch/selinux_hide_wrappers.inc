@@ -903,6 +903,31 @@ static int ksu_pair_denied(const char *buf, size_t size)
     }
     return 0;
 }
+/* 对账日志：把「问了什么 -> 最终返回什么」成对打出来。
+ * access 的应答体是 simple_transaction_argresp：ssize_t size + char data[]，
+ * data 第一段就是 allowed 位图（十六进制），清零后应当全 0。 */
+static atomic_t ksu_res_log_left = ATOMIC_INIT(300);
+static void ksu_log_res(const char *q, struct file *file, ssize_t rv)
+{
+    char first[16];
+    const char *d;
+    int i;
+
+    if (rv <= 0 || !file->private_data) {
+        pr_info("selinux_hide: RES rv=%zd q='%s' a='<none>'\n", rv, q);
+        return;
+    }
+    d = (const char *)file->private_data + sizeof(ssize_t);
+    for (i = 0; i < (int)sizeof(first) - 1 && i < rv; i++) {
+        char c = d[i];
+
+        if (c == ' ' || c == '\n' || c == '\0')
+            break;
+        first[i] = c;
+    }
+    first[i] = 0;
+    pr_info("selinux_hide: RES rv=%zd q='%s' a='%s'\n", rv, q, first);
+}
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     const struct file_operations *orig = ksu_acc_orig;
@@ -943,20 +968,31 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         }
         if (ok && ksu_pair_denied(kbuf, size)) { /* 规则层：照常算，但把 allowed 位图清零 */
             ssize_t rv2;
+
             pr_info("selinux_hide: pair deny uid=%d\n", current_uid().val);
-            kfree(kbuf);
             rv2 = orig->write(file, ubuf, size, ppos);
             if (rv2 > 0) {
                 ksu_zero_allowed(file, rv2);
+                if (atomic_dec_if_positive(&ksu_res_log_left) >= 0)
+                    ksu_log_res(kbuf, file, rv2);
+                kfree(kbuf);
                 return rv2;
             }
+            kfree(kbuf);
             return -EINVAL; /* 兜底：EINVAL 对方当「不存在」，同样静默 */
         }
-        if (!ok)
+        if (!ok) {
             pr_info("selinux_hide: access deny uid=%d '%s'\n", current_uid().val, kbuf);
-        kfree(kbuf);
-        if (!ok)
+            kfree(kbuf);
             return -EINVAL;
+        }
+        {
+            ssize_t rv3 = orig->write(file, ubuf, size, ppos);
+
+            if (rv3 > 0 && atomic_dec_if_positive(&ksu_res_log_left) >= 0)
+                ksu_log_res(kbuf, file, rv3);
+            kfree(kbuf);
+            return rv3;
+        }
     }
-    return orig->write(file, ubuf, size, ppos);
 }
