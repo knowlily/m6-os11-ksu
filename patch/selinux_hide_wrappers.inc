@@ -410,54 +410,71 @@ static int ksu_stock_has_name(const char *t, size_t n)
     return 0;
 }
 
-/* ===== status 页：把 sequence / policyload 拨回出厂值 =====
- * /sys/fs/selinux/status 是 mmap 出去的 5×u32：version/sequence/enforcing/policyload/deny_unknown。
- * 第三方策略一加载，sequence++ 且 policyload++，检测器一眼就能看出「策略被换过」。
- * 这个页是 alloc_page 出来的堆页（可写），直接把这两个字段拨回出厂值即可，不用 hook。
+/* ===== status 页：给 app 一个「出厂状态」的假页 =====
+ * /sys/fs/selinux/status 是 5×u32：version/sequence/enforcing/policyload/deny_unknown。
+ * 第三方策略一注入，内核会 sequence++ 且 policyload++，检测器拿这两个数当「策略被换过」的铁证。
  *
- * 注意 6.1 的签名是 selinux_kernel_status_page(struct selinux_state *state)，
- * 不是无参 —— 拿 selinux_state 的地址传进去，别用 0 参函数指针去调（会拿垃圾当指针）。
+ * 6.1 的 stock 实现（security/selinux/selinuxfs.c）：
+ *   sel_open_handle_status()  -> filp->private_data = selinux_kernel_status_page(fsi->state)
+ *   sel_read_handle_status()  -> BUG_ON(!status); simple_read_from_buffer(page_address(private_data))
+ *   sel_mmap_handle_status()  -> BUG_ON(!status); remap_pfn_range(page_to_pfn(private_data))
+ * 也就是说 read/mmap 都只看 private_data。所以最省事也最安全的做法：
+ * 自己 alloc_page 一张填好出厂值的页，把 status 的 i_fop 换成「open 塞假页、read/mmap 保持 stock」。
+ *
+ * 不走「直接改真页」那条路：那需要调 selinux_kernel_status_page(&selinux_state)，
+ * 而 selinux_state 的地址要靠 kallsyms 解析 —— 9.1 实测在这里直接把机器送重启了
+ * （hide_mark 停在 do-pol，do-status 没写出来）。假页方案不依赖任何内核内部符号。
  */
-typedef struct page *(*ksu_status_page_fn)(void *state);
+static struct file_operations ksu_status_ops;
+static const struct file_operations *ksu_status_orig;
+static struct page *ksu_fake_status;
 
-static int ksu_status_scrub(void)
+static int ksu_status_open(struct inode *inode, struct file *filp)
 {
-    ksu_status_page_fn fn = (ksu_status_page_fn)find_kernel_symbol_exact("selinux_kernel_status_page");
-    void *state = (void *)find_kernel_symbol_exact("selinux_state");
-    struct page *pg;
+    /* 系统域看真页；app uid 看假页（出厂值：seq=0 policyload=0 enforcing=1 deny_unknown=1） */
+    if (likely(current_uid().val < 10000) || !ksu_fake_status) {
+        if (ksu_status_orig && ksu_status_orig->open)
+            return ksu_status_orig->open(inode, filp);
+        return 0;
+    }
+    filp->private_data = ksu_fake_status;
+    return 0;
+}
+
+static int ksu_status_fake(void)
+{
+    struct file *f = NULL;
+    struct inode *in;
     u32 *sp;
 
-    if (!fn) {
-        pr_err("selinux_hide: no selinux_kernel_status_page\n");
-        return -ENOSYS;
+    if (!ksu_fake_status) {
+        ksu_fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);
+        if (!ksu_fake_status) {
+            pr_err("selinux_hide: fake status alloc failed\n");
+            return -ENOMEM;
+        }
+        sp = (u32 *)page_address(ksu_fake_status);
+        sp[0] = 1; /* version */
+        sp[1] = 0; /* sequence：出厂值 */
+        sp[2] = 1; /* enforcing */
+        sp[3] = 0; /* policyload：没有加载过第三方策略 */
+        sp[4] = 1; /* deny_unknown */
+        ksu_mark("status-fake", (long)(((sp[1] & 0xffff) << 16) | (sp[3] & 0xffff)));
     }
-    if (!state) {
-        pr_err("selinux_hide: no selinux_state\n");
-        return -ENOSYS;
-    }
-    pg = fn(state);
-    if (!pg) {
-        pr_err("selinux_hide: status page null\n");
+
+    in = ksu_path_inode("/sys/fs/selinux/status", &f);
+    if (!in) {
+        pr_err("selinux_hide: no status inode\n");
         return -ENOENT;
     }
-    sp = (u32 *)page_address(pg);
-    if (!sp || sp[0] != 1) {
-        pr_err("selinux_hide: bad status page ver=%u\n", sp ? sp[0] : 0xffffffff);
-        return -EINVAL;
-    }
-    /* 把「改之前」的值落盘：万一检测器期望的不是 0/0，看这行就知道该拨到哪 */
-    ksu_mark("status-before", (long)(((sp[1] & 0xffff) << 16) | (sp[3] & 0xffff)));
-    pr_info("selinux_hide: status seq=%u pl=%u enf=%u dn=%u\n", sp[1], sp[3], sp[2], sp[4]);
-    /*
-     * < 6.10 的内核上，出厂手机的 status 页是 sequence=0 / policyload=0
-     * （第三方策略一注入就变成 1/1，检测器拿这两个数当「策略被换过」的铁证）。
-     * enforcing 只在建页那一刻取过值，若建页时正好在 permissive 窗口里就会永久留 0，
-     * 所以这里一并拨成 1 —— 这条链跑完本来就是 Enforcing。
-     */
-    sp[1] = 0;
-    sp[2] = 1;
-    sp[3] = 0;
-    ksu_mark("status-after", (long)(((sp[1] & 0xffff) << 16) | (sp[3] & 0xffff)));
+    ksu_status_orig = in->i_fop;
+    memcpy(&ksu_status_ops, in->i_fop, sizeof(ksu_status_ops));
+    ksu_status_ops.open = ksu_status_open;
+    WRITE_ONCE(in->i_fop, &ksu_status_ops);
+    filp_close(f, NULL);
+    pr_info("selinux_hide: status fops orig=0x%lx ours=0x%lx page=0x%lx\n", (unsigned long)ksu_status_orig,
+            (unsigned long)&ksu_status_ops, (unsigned long)ksu_fake_status);
+    ksu_mark("status-installed", 0);
     return 0;
 }
 
@@ -568,8 +585,8 @@ static void ksu_fops_do(void)
         ksu_mark("do-pol", r3);
         ksu_fops_state = (r1 == 0 || r2 == 0 || r3 == 0) ? 1 : 0;
     }
-    /* 策略一旦被注入，status 页的 sequence/policyload 就是「被换过」的铁证，最后拨回去 */
-    rs = ksu_status_scrub();
+    /* 策略一旦被注入，status 的 sequence/policyload 就是「被换过」的铁证：给 app 换成出厂值的假页 */
+    rs = ksu_status_fake();
     ksu_mark("do-status", rs);
     ksu_mark("do-done", ksu_fops_state);
     pr_info("selinux_hide: fops do ctx=%d acc=%d stock=%d status=%d state=%d\n", r1, r2, rp, rs,
