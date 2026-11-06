@@ -791,6 +791,10 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
             return -EFAULT;
         }
         kbuf[size] = 0;
+        if (ksu_is_sentinel(kbuf, size)) { /* 哨兵：证明写路径可达 */
+            kfree(kbuf);
+            return -EPERM;
+        }
         ok = ksu_ctx_allowed(kbuf, size);
         ksu_hook_log("HCTX", kbuf, size, ok);
         if (!ok)
@@ -841,6 +845,13 @@ static int ksu_has_sub(const char *buf, size_t size, const char *needle)
     return 0;
 }
 
+/* 哨兵：证明 context/access 的写路径到底有没有进我们的 hook。
+ * 干净机对一个不存在的类型只会回 -EINVAL(22)；这里对 hermesprobe 回 -EPERM(1)，
+ * 两者不可能是同一个答案，所以探针看到 1 就等于「hook 被调用了」。 */
+static int ksu_is_sentinel(const char *buf, size_t size)
+{
+    return ksu_has_sub(buf, size, "hermesprobe");
+}
 static int ksu_rule_denied(const char *buf, size_t size)
 {
     size_t i;
@@ -875,6 +886,10 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
             return -EFAULT;
         }
         kbuf[size] = 0;
+        if (ksu_is_sentinel(kbuf, size)) {
+            kfree(kbuf);
+            return -EPERM;
+        }
         ok = ksu_ctx_allowed(kbuf, size);
         ksu_hook_log("HACC", kbuf, size, ok);
         if (ok && ksu_rule_denied(kbuf, size)) { /* 规则指纹：按干净机的答案回 denied */
