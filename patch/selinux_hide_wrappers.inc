@@ -812,6 +812,15 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
         }
         ok = ksu_ctx_allowed(kbuf, size);
         ksu_hook_log("HCTX", kbuf, size, ok);
+        /* context 路径也要留痕：Li.c() 拿到 EINVAL 后会再用 a(type,type,0) 复核，
+         * 只有两边都看到，才能确认某个类型是真的「不存在」。 */
+        {
+            static atomic_t ksu_ctx_log_left = ATOMIC_INIT(200);
+
+            if (atomic_dec_if_positive(&ksu_ctx_log_left) >= 0)
+                pr_info("selinux_hide: CTX uid=%d ok=%d '%s'\n",
+                        current_uid().val, ok, kbuf);
+        }
         if (!ok)
             pr_info("selinux_hide: context deny uid=%d '%s'\n", current_uid().val, kbuf);
         kfree(kbuf);
