@@ -9,6 +9,8 @@
 #include <linux/vmalloc.h>
 #include <linux/mm_types.h>
 
+static void ksu_mark(const char *what, long v); /* 下面到处用，先声明 */
+
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
  * 也可能给 __user 指针；两种都不能崩，所以先 copy_from_user，
@@ -229,6 +231,10 @@ static int ksu_fops_patch(const char *path, struct file_operations *copy, const 
     if (!in)
         return -ENOENT;
     cur = in->i_fop;
+    if (cur == copy) { /* 已经装过（重复 enable），别再把自己的副本当 orig */
+        filp_close(f, NULL);
+        return 0;
+    }
     memcpy(copy, cur, sizeof(*copy));
     if (new_write) {
         /* 内核里 write_op_fn 是老的 3 参签名，而 fops.write 是 4 参，两者强转会 -Werror，用 union 过渡 */
@@ -259,6 +265,7 @@ static int ksu_fops_restore(const char *path, const struct file_operations *orig
         return -ENOENT;
     WRITE_ONCE(in->i_fop, orig);
     filp_close(f, NULL);
+    ksu_mark("restore", 0);
     pr_info("selinux_hide: fops %s restored to 0x%lx\n", path, (unsigned long)orig);
     return 0;
 }
@@ -292,6 +299,20 @@ static void ksu_mark(const char *what, long v)
     kernel_write(f, buf, n, &f->f_pos);
     vfs_fsync(f, 0); /* panic 也不丢：不然会只剩一堆 \0 */
     filp_close(f, NULL);
+}
+
+/* hook 打点：前 24 次把「进来的原始串 + 判定结果」写进 hide_mark。
+ * 真机没有 dmesg（klogctl 对 shell/root 都拒绝），这是唯一能看见 hook 内部的路。 */
+static int ksu_hook_logs;
+
+static void ksu_hook_log(const char *kind, const char *buf, size_t size, int ok)
+{
+    if (ksu_hook_logs >= 24)
+        return;
+    ksu_hook_logs++;
+    ksu_mark(kind, (long)size);
+    if (buf)
+        ksu_mark(buf, (long)ok);
 }
 
 /* ===== 真相源：ROM 出厂策略 =====
@@ -467,6 +488,10 @@ static int ksu_status_fake(void)
         pr_err("selinux_hide: no status inode\n");
         return -ENOENT;
     }
+    if (in->i_fop == &ksu_status_ops) { /* 已经装过 */
+        filp_close(f, NULL);
+        return 0;
+    }
     ksu_status_orig = in->i_fop;
     memcpy(&ksu_status_ops, in->i_fop, sizeof(ksu_status_ops));
     ksu_status_ops.open = ksu_status_open;
@@ -611,17 +636,16 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
     /* 主路：排队到 workqueue 里做（不要在 init/持锁上下文里碰 VFS） */
     if (want == (const void *)my_write_context_auto || want == (const void *)my_write_access_auto ||
         want == (const void *)my_sel_open_handle_status) {
-        if (!ksu_fops_queued) {
+        ksu_mark("queued", (long)system_state);
+        if (system_state == SYSTEM_RUNNING) {
+            /* ksud 上下文里就地做：能写 /data/local/tmp，也不用等 workqueue */
+            ksu_mark("inline", (long)system_state);
+            ksu_fops_do();
+        } else if (!ksu_fops_queued) {
+            /* 只有「还没到 RUNNING」时才排队；重复 enable 不必再排 */
             ksu_fops_queued = 1;
-            ksu_mark("queued", (long)system_state);
-            if (system_state == SYSTEM_RUNNING) {
-                /* ksud 上下文里就地做：能写 /data/local/tmp，也不用等 workqueue */
-                ksu_mark("inline", (long)system_state);
-                ksu_fops_do();
-            } else {
-                pr_info("selinux_hide: not running(%d), defer 8s\n", (int)system_state);
-                schedule_delayed_work(&ksu_fops_work, 8 * HZ);
-            }
+            pr_info("selinux_hide: not running(%d), defer 8s\n", (int)system_state);
+            schedule_delayed_work(&ksu_fops_work, 8 * HZ);
         }
         return 0;
     }
@@ -744,6 +768,7 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
         }
         kbuf[size] = 0;
         ok = ksu_ctx_allowed(kbuf, size);
+        ksu_hook_log("HCTX", kbuf, size, ok);
         if (!ok)
             pr_info("selinux_hide: context deny uid=%d '%s'\n", current_uid().val, kbuf);
         kfree(kbuf);
@@ -778,6 +803,7 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         }
         kbuf[size] = 0;
         ok = ksu_ctx_allowed(kbuf, size);
+        ksu_hook_log("HACC", kbuf, size, ok);
         if (!ok)
             pr_info("selinux_hide: access deny uid=%d '%s'\n", current_uid().val, kbuf);
         kfree(kbuf);
