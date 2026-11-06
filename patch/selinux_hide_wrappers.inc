@@ -395,23 +395,60 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
     return ksu_ro_write_old(dst, src, n);
 }
 
-/* 关键字黑名单：检测器就是拿候选串去问 security_check_context()，
- * 我们直接回答 -EINVAL 就够了，不必依赖 backup_sepolicy（这台机器上它多半是 NULL）。 */
-static const char *const ksu_hidden_tokens[] = {"ksu", "magisk", "lsposed"};
+/*
+ * 白名单，而不是黑名单：
+ *   app uid 来问 SELinux 上下文时，只放行 AOSP 里那几种标准 App 类型；
+ *   其余（ksu / magisk_file / lsposed_file / 以后任何新模块的私有类型）
+ *   一律 -EINVAL。
+ *
+ * 这样以后装了 APatch、Zygisk、susfs…… 都不用再加关键词：
+ * 它们的类型名不在 AOSP 标准集合里，天然就被挡掉。
+ * 同时不影响任何正常 App —— 正常 App 自检用的都是 untrusted_app_* 这类名字。
+ */
+static const char *const ksu_ok_types[] = {
+    "untrusted_app", "priv_app", "platform_app", "system_app", "isolated_app",
+    "ephemeral_app", "shared_relro", "shell", "su", "system_server",
+};
 
-static int ksu_hit_hidden(const char *buf, size_t size)
+static int ksu_type_allowed(const char *t, size_t n)
 {
-    size_t i, t;
+    size_t i;
 
-    for (t = 0; t < ARRAY_SIZE(ksu_hidden_tokens); t++) {
-        size_t n = strlen(ksu_hidden_tokens[t]);
-        if (n > size)
-            continue;
-        for (i = 0; i + n <= size; i++)
-            if (!memcmp(buf + i, ksu_hidden_tokens[t], n))
-                return 1;
+    for (i = 0; i < ARRAY_SIZE(ksu_ok_types); i++) {
+        size_t m = strlen(ksu_ok_types[i]);
+        if (n >= m && !memcmp(t, ksu_ok_types[i], m))
+            return 1;
     }
     return 0;
+}
+
+/* 返回 1 = 放行；0 = 里面有非标准类型（隐藏掉） */
+static int ksu_ctx_allowed(const char *buf, size_t size)
+{
+    const char *p = buf, *end = buf + size;
+
+    while (p < end) {
+        const char *sp = memchr(p, ' ', (size_t)(end - p));
+        const char *tok_end = sp ? sp : end;
+        const char *c1 = memchr(p, ':', (size_t)(tok_end - p));
+
+        if (c1) {
+            const char *c2 = memchr(c1 + 1, ':', (size_t)(tok_end - (c1 + 1)));
+            if (c2) {
+                const char *t = c2 + 1;
+                size_t tn = 0;
+
+                while (t + tn < tok_end && t[tn] != ':' && t[tn] != '\n' && t[tn] != '\t')
+                    tn++;
+                if (tn && !ksu_type_allowed(t, tn))
+                    return 0;
+            }
+        }
+        p = tok_end;
+        while (p < end && (*p == ' ' || *p == '\n' || *p == '\t'))
+            p++;
+    }
+    return 1;
 }
 
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
@@ -442,7 +479,7 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
             return -EFAULT;
         }
         kbuf[size] = 0;
-        if (ksu_hit_hidden(kbuf, size)) { /* 黑名单：直接判无效 */
+        if (!ksu_ctx_allowed(kbuf, size)) { /* 非标准类型 -> 看不到 */
             kfree(kbuf);
             return -EINVAL;
         }
@@ -474,7 +511,7 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
             return -EFAULT;
         }
         kbuf[size] = 0;
-        if (ksu_hit_hidden(kbuf, size)) {
+        if (!ksu_ctx_allowed(kbuf, size)) {
             kfree(kbuf);
             return -EINVAL;
         }
