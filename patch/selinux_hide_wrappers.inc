@@ -338,8 +338,10 @@ static const struct file_operations *ksu_pol_orig;
 ssize_t my_pol_read(struct file *f, char __user *ubuf, size_t n, loff_t *ppos)
 {
     if (current_uid().val >= 10000) {
-        pr_info("selinux_hide: block policy read uid=%d\n", current_uid().val);
-        return -EACCES;
+        /* 返回 EOF 而不是 -EACCES：解析器拿到 0 字节会当成"空策略"，
+         * 拿到 EACCES 有的实现会直接 abort（DirtySepolicy 崩过一次）。 */
+        pr_info("selinux_hide: policy read -> EOF uid=%d\n", current_uid().val);
+        return 0;
     }
     return (ksu_pol_orig && ksu_pol_orig->read) ? ksu_pol_orig->read(f, ubuf, n, ppos) : -EINVAL;
 }
@@ -457,8 +459,12 @@ static int ksu_ro_write(void *dst, const void *src, size_t n)
  * 同时不影响任何正常 App —— 正常 App 自检用的都是 untrusted_app_* 这类名字。
  */
 static const char *const ksu_ok_types[] = {
+    /* 普通 App 域 */
     "untrusted_app", "priv_app", "platform_app", "system_app", "isolated_app",
-    "ephemeral_app", "shared_relro", "shell", "su", "system_server",
+    "ephemeral_app", "shared_relro",
+    /* 系统替 App 起的辅助域（漏一个就会让 selinux_android_setcontext 失败 → SIGABRT） */
+    "app_zygote", "webview_zygote", "sdk_sandbox", "system_server",
+    "media", "media_rw", "shell", "su",
 };
 
 static int ksu_type_allowed(const char *t, size_t n)
