@@ -327,6 +327,53 @@ static void ksu_fops_apply(struct work_struct *w);
 static DECLARE_DELAYED_WORK(ksu_fops_work, ksu_fops_apply);
 static int ksu_fops_queued;
 
+/* ===== 策略文件读取拦截（.read / .mmap）=====
+ * 有些检测器不走 security_check_context()，而是直接把 /sys/fs/selinux/policy
+ * 那份二进制策略读下来 grep 类型名。这个 hook 让 app uid 根本读不到策略。
+ * 同一套 i_fop 替换（8.7 已验证只换指针是安全的）。
+ */
+static __maybe_unused struct file_operations ksu_pol_ops;
+static const struct file_operations *ksu_pol_orig;
+
+ssize_t my_pol_read(struct file *f, char __user *ubuf, size_t n, loff_t *ppos)
+{
+    if (current_uid().val >= 10000) {
+        pr_info("selinux_hide: block policy read uid=%d\n", current_uid().val);
+        return -EACCES;
+    }
+    return (ksu_pol_orig && ksu_pol_orig->read) ? ksu_pol_orig->read(f, ubuf, n, ppos) : -EINVAL;
+}
+
+int my_pol_mmap(struct file *f, struct vm_area_struct *vma)
+{
+    if (current_uid().val >= 10000) {
+        pr_info("selinux_hide: block policy mmap uid=%d\n", current_uid().val);
+        return -EACCES;
+    }
+    return (ksu_pol_orig && ksu_pol_orig->mmap) ? ksu_pol_orig->mmap(f, vma) : -EINVAL;
+}
+
+static int ksu_fops_patch_policy(void)
+{
+    struct file *f = NULL;
+    struct inode *in = ksu_path_inode("/sys/fs/selinux/policy", &f);
+    const struct file_operations *cur;
+    int ret = 0;
+
+    if (!in)
+        return -ENOENT;
+    cur = in->i_fop;
+    ksu_pol_orig = cur;
+    memcpy(&ksu_pol_ops, cur, sizeof(ksu_pol_ops));
+    ksu_pol_ops.read = my_pol_read;
+    ksu_pol_ops.mmap = my_pol_mmap;
+    WRITE_ONCE(in->i_fop, &ksu_pol_ops);
+    filp_close(f, NULL);
+    pr_info("selinux_hide: policy fops orig=0x%lx ours=0x%lx\n", (unsigned long)cur,
+            (unsigned long)&ksu_pol_ops);
+    return ret;
+}
+
 /* A/B 开关：0 = 只把 i_fop 指向模块里的副本（write 仍是原函数），1 = 换成我们的 hook */
 #ifndef KSU_FOPS_WRAP
 #define KSU_FOPS_WRAP 1
@@ -343,7 +390,11 @@ static void ksu_fops_do(void)
     r2 = ksu_fops_patch("/sys/fs/selinux/access", &ksu_acc_ops, &ksu_acc_orig,
                         KSU_FOPS_WRAP ? (void *)my_write_access_auto : NULL);
     ksu_mark("do-acc", r2);
-    ksu_fops_state = (r1 == 0 || r2 == 0) ? 1 : 0;
+    {
+        int r3 = ksu_fops_patch_policy();
+        ksu_mark("do-pol", r3);
+        ksu_fops_state = (r1 == 0 || r2 == 0 || r3 == 0) ? 1 : 0;
+    }
     ksu_mark("do-done", ksu_fops_state);
     pr_info("selinux_hide: fops do ctx=%d acc=%d state=%d\n", r1, r2, ksu_fops_state);
 }
