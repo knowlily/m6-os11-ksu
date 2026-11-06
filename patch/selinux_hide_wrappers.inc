@@ -928,6 +928,14 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         }
         ok = ksu_ctx_allowed(kbuf, size);
         ksu_hook_log("HACC", kbuf, size, ok);
+        /* 放行也要留痕：只记 deny 的话，漏掉的那条永远看不见（dmesg -> klog.txt 可读）。 */
+        {
+            static atomic_t ksu_acc_log_left = ATOMIC_INIT(200);
+
+            if (atomic_dec_if_positive(&ksu_acc_log_left) >= 0)
+                pr_info("selinux_hide: ACC uid=%d ok=%d '%s'\n",
+                        current_uid().val, ok, kbuf);
+        }
         if (ok && ksu_pair_denied(kbuf, size)) { /* 规则层：照常算，但把 allowed 位图清零 */
             ssize_t rv2;
             pr_info("selinux_hide: pair deny uid=%d\n", current_uid().val);
