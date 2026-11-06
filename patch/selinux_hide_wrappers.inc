@@ -887,21 +887,49 @@ static void ksu_zero_allowed(struct file *file, ssize_t rv)
     for (i = 0; i < rv - (ssize_t)sizeof(ssize_t) && d[i] != ' ' && d[i] != '\n'; i++)
         d[i] = '0';
 }
+static int ksu_count_sub(const char *buf, size_t size, const char *needle)
+{
+    size_t n = strlen(needle), i;
+    int cnt = 0;
+
+    if (!n || n > size)
+        return 0;
+    for (i = 0; i + n <= size; i++) {
+        if (!memcmp(buf + i, needle, n)) {
+            cnt++;
+            i += n - 1;
+        }
+    }
+    return cnt;
+}
+/* B 方案：不猜探测器的 tcon，只放行「应用自身域」的两条通道自检，其余一律清零。
+ *   1) scon 是应用自身域（app_zygote / untrusted_app / isolated_app）
+ *   2) 且 tcon 含 kernel（security/check_context）或 scon == tcon（process/setcurrent）
+ * 干净机上这两条本来就是 allowed（所以拦了会让检测器直接报错退出，后面全不跑）；
+ * 其余任何规则查询一律判 not allowed —— 不再依赖探测器具体查了哪个 tcon。 */
 static int ksu_pair_denied(const char *buf, size_t size)
 {
+    char scon[96];
     size_t i;
 
-    for (i = 0; i < ARRAY_SIZE(ksu_pair_sigs); i++) {
-        const char *scon = ksu_pair_sigs[i].scon;
-        const char *tcon = ksu_pair_sigs[i].tcon;
-
-        if (scon[0] && !ksu_has_sub(buf, size, scon))
-            continue;
-        if (tcon[0] && !ksu_has_sub(buf, size, tcon))
-            continue;
-        return 1;
+    for (i = 0; i < sizeof(scon) - 1 && i < size; i++) {
+        if (buf[i] == ' ' || buf[i] == '\n' || buf[i] == 0)
+            break;
+        scon[i] = buf[i];
     }
-    return 0;
+    scon[i] = 0;
+
+    if (ksu_has_sub(scon, i, "app_zygote") ||
+        ksu_has_sub(scon, i, "untrusted_app") ||
+        ksu_has_sub(scon, i, "isolated_app")) {
+        if (ksu_has_sub(buf, size, "kernel"))
+            return 0;
+        if (ksu_count_sub(buf, size, "app_zygote") >= 2 ||
+            ksu_count_sub(buf, size, "untrusted_app") >= 2 ||
+            ksu_count_sub(buf, size, "isolated_app") >= 2)
+            return 0;
+    }
+    return 1;
 }
 /* 对账日志：把「问了什么 -> 最终返回什么」成对打出来。
  * access 的应答体是 simple_transaction_argresp：ssize_t size + char data[]，
