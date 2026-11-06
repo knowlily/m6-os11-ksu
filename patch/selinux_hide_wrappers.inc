@@ -767,6 +767,21 @@ static int ksu_ctx_allowed(const char *buf, size_t size)
  * 这里的 backup_sepolicy 在本机是 NULL/脏的，而且它把 buf 当【内核】指针用（8.6 就是这么 panic 的）。
  * 我们只要「不存在」这个回答，根本不需要它的策略副本。
  */
+/* 哨兵：证明 context/access 的写路径到底有没有进我们的 hook。
+ * 干净机对不存在的类型只会回 -EINVAL(22)；这里对 hermesprobe 回 -EPERM(1)，
+ * 两者不可能撞车，所以探针看到 1 就等于「hook 真的被调用了」。 */
+static int ksu_is_sentinel(const char *buf, size_t size)
+{
+    static const char tag[] = "hermesprobe";
+    size_t n = sizeof(tag) - 1, i;
+
+    if (n > size)
+        return 0;
+    for (i = 0; i + n <= size; i++)
+        if (!memcmp(buf + i, tag, n))
+            return 1;
+    return 0;
+}
 ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
     const struct file_operations *orig = ksu_ctx_orig;
@@ -845,13 +860,6 @@ static int ksu_has_sub(const char *buf, size_t size, const char *needle)
     return 0;
 }
 
-/* 哨兵：证明 context/access 的写路径到底有没有进我们的 hook。
- * 干净机对一个不存在的类型只会回 -EINVAL(22)；这里对 hermesprobe 回 -EPERM(1)，
- * 两者不可能是同一个答案，所以探针看到 1 就等于「hook 被调用了」。 */
-static int ksu_is_sentinel(const char *buf, size_t size)
-{
-    return ksu_has_sub(buf, size, "hermesprobe");
-}
 static int ksu_rule_denied(const char *buf, size_t size)
 {
     size_t i;
