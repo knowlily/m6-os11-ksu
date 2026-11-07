@@ -1014,6 +1014,12 @@ static void ksu_zero_allowed(struct file *file, ssize_t rv)
     d = ar + sizeof(ssize_t);
     for (i = 0; i < rv - (ssize_t)sizeof(ssize_t) && d[i] != ' ' && d[i] != '\n'; i++)
         d[i] = '0';
+
+    { /* 第 5 字段 avdSeqNo 也归位 */
+        char *ar2 = (char *)file->private_data;
+        if (ar2)
+            ksu_fix_seqno(ar2 + sizeof(ssize_t), rv - (ssize_t)sizeof(ssize_t));
+    }
 }
 /* 命中返回下标（-1 未命中）：调用方据此知道该清哪一位 */
 static int ksu_pair_index(const char *buf, size_t size)
@@ -1176,13 +1182,22 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         ksu_diag("acc uid=%d ok=%d pi=%d bit=%d size=%zu", current_uid().val, ok, pi,
                  pi >= 0 ? ksu_pair_sigs[pi].bit : -1, size);
         if (pi >= 0) {
-            /* 干净机上这些规则对本来就是 denied。直接 EACCES 比「回一条 allowed=0 的响应」
-             * 更接近真实，而且不依赖响应缓冲区布局（v1.5.0 改了写路径后掩码会静默失效）。 */
-            pr_info("selinux_hide: pair deny uid=%d bit=%d" "\n", current_uid().val,
+            /* 干净机上这些规则对本来就是「allowed=0 的合法响应」。不能返回 -EACCES：
+             * DirtySepolicy 的 checkSELinuxAccess 会把非 0 返回当成 ERROR 直接中断。 */
+            ssize_t rv2;
+
+            pr_info("selinux_hide: pair deny uid=%d bit=%d\n", current_uid().val,
                     ksu_pair_sigs[pi].bit);
-            kbuf[0] = 0;
+            rv2 = orig->write(file, ubuf, size, ppos);
+            if (rv2 > 0) {
+                ksu_zero_allowed(file, rv2);
+                if (atomic_dec_if_positive(&ksu_res_log_left) >= 0)
+                    ksu_log_res(kbuf, file, rv2);
+                kfree(kbuf);
+                return rv2;
+            }
             kfree(kbuf);
-            return -EACCES;
+            return -EINVAL;
         }
         if (!ok) {
             pr_info("selinux_hide: access deny uid=%d '%s'\n", current_uid().val, kbuf);
