@@ -262,6 +262,7 @@ jobs:
           grep -n "ksu_kernel_umount_init\|feature/kernel_umount.h" "$KSUDIR/kernel/core/init.c" | head -4
 
       - name: selinux_hide 备份只抓一次（防被多次 apply 污染）
+        if: ${{ inputs.selinux_patch }}
         run: |
           cd work/Code_Opensource/kernel
           KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
@@ -271,6 +272,7 @@ jobs:
           grep -n "backup_once\|if (!backup_sepolicy)" "$KSUDIR/kernel/selinux/rules.c" | head -4
 
       - name: selinux_hide hook 进入日志（区分 hook 没被调用 / 备份脏）
+        if: ${{ inputs.selinux_patch }}
         run: |
           cd work/Code_Opensource/kernel
           KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
@@ -280,6 +282,7 @@ jobs:
           grep -c "HOOKTRACE" "$KSUDIR/kernel/feature/selinux_hide.c" || true
 
       - name: selinux_hide 改直写 .data（ksu_patch_text 对数据段是空操作）
+        if: ${{ inputs.selinux_patch }}
         run: |
           cd work/Code_Opensource/kernel
           KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
