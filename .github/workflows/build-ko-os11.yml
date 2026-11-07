@@ -43,6 +43,10 @@ on:
         description: "KSUSU 源码 tarball 地址（填了就绕过 setup.sh，直接解包到 KernelSU/）"
         default: ""
         required: false
+      selinux_patch:
+        description: "打我们的 SELinux 隐藏补丁（false = 原厂实现，给别的管理器保稳定）"
+        type: boolean
+        default: true
       ko_alias:
         description: "产物 ko 的别名前缀（如 sukisu / finasu），留空则用原文件名"
         default: ""
@@ -280,11 +284,15 @@ jobs:
           cd work/Code_Opensource/kernel
           KSUDIR=$(ls -d KernelSU KernelSU-Next 2>/dev/null | head -1)
           [ -n "$KSUDIR" ] || { echo "!! 没有源码目录"; exit 1; }
-          python3 "$GITHUB_WORKSPACE/patch/apply_selinux_hide_direct_store.py" "$KSUDIR"
-          echo "---- direct-store 自检 ----"
-          grep -c "DIRECTSTORE" "$KSUDIR/kernel/feature/selinux_hide.c" || true
-          echo "残留 ksu_patch_text 次数（应为 0）:"
-          grep -c "ksu_patch_text" "$KSUDIR/kernel/feature/selinux_hide.c" || true
+          if [ "${{ inputs.selinux_patch }}" = "true" ]; then
+            python3 "$GITHUB_WORKSPACE/patch/apply_selinux_hide_direct_store.py" "$KSUDIR"
+            echo "---- direct-store 自检 ----"
+            grep -c "DIRECTSTORE" "$KSUDIR/kernel/feature/selinux_hide.c" || true
+            echo "残留 ksu_patch_text 次数（应为 0）:"
+            grep -c "ksu_patch_text" "$KSUDIR/kernel/feature/selinux_hide.c" || true
+          else
+            echo "selinux_patch=false -> 跳过我们的 SELinux 隐藏补丁（用上游实现）"
+          fi
 
       - name: su creds 修复
         run: |
