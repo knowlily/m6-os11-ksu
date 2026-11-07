@@ -308,6 +308,20 @@ static void ksu_mark(const char *what, long v)
  * 真机没有 dmesg（klogctl 对 shell/root 都拒绝），这是唯一能看见 hook 内部的路。 */
 static int ksu_hook_logs;
 
+/* 运行时诊断：/sys/module/kernelsu/parameters/hide_diag（0444，shell 可直接读）。
+ * 本机 dmesg 对 shell 全 deny、su 又常常不可用，日志取不到时这是唯一可靠的通道。 */
+static char ksu_diag_buf[256] = "boot";
+module_param_string(hide_diag, ksu_diag_buf, sizeof(ksu_diag_buf), 0444);
+MODULE_PARM_DESC(hide_diag, "last selinux_hide event");
+
+static void ksu_diag(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vscnprintf(ksu_diag_buf, sizeof(ksu_diag_buf), fmt, ap);
+    va_end(ap);
+}
 static void ksu_hook_log(const char *kind, const char *buf, size_t size, int ok)
 {
     if (ksu_hook_logs >= 24)
@@ -619,6 +633,7 @@ static void ksu_fops_do(void)
     ksu_mark("do-status", rs);
     ksu_mark("do-setprocattr", ksu_setprocattr_hook());
     ksu_mark("do-done", ksu_fops_state);
+    ksu_diag("init ctx=%d acc=%d stock=%d st=%d", r1, r2, rp, rs);
     pr_info("selinux_hide: fops do ctx=%d acc=%d stock=%d status=%d state=%d\n", r1, r2, rp, rs,
             ksu_fops_state);
 }
@@ -1158,21 +1173,16 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
                         current_uid().val, ok, kbuf);
         }
         pi = ok ? ksu_pair_index(kbuf, size) : -1;
-        if (pi >= 0) { /* 规则层：照常算，只按位清掉被探测的那个权限 */
-            ssize_t rv2;
-            int pbit = ksu_pair_sigs[pi].bit;
-
-            pr_info("selinux_hide: pair deny uid=%d bit=%d\n", current_uid().val, pbit);
-            rv2 = orig->write(file, ubuf, size, ppos);
-            if (rv2 > 0) {
-                ksu_mask_probe_bit(file, rv2, pbit);
-                if (atomic_dec_if_positive(&ksu_res_log_left) >= 0)
-                    ksu_log_res(kbuf, file, rv2);
-                kfree(kbuf);
-                return rv2;
-            }
+        ksu_diag("acc uid=%d ok=%d pi=%d bit=%d size=%zu", current_uid().val, ok, pi,
+                 pi >= 0 ? ksu_pair_sigs[pi].bit : -1, size);
+        if (pi >= 0) {
+            /* 干净机上这些规则对本来就是 denied。直接 EACCES 比「回一条 allowed=0 的响应」
+             * 更接近真实，而且不依赖响应缓冲区布局（v1.5.0 改了写路径后掩码会静默失效）。 */
+            pr_info("selinux_hide: pair deny uid=%d bit=%d" "\n", current_uid().val,
+                    ksu_pair_sigs[pi].bit);
+            kbuf[0] = 0;
             kfree(kbuf);
-            return -EINVAL; /* 兜底：EINVAL 对方当「不存在」，同样静默 */
+            return -EACCES;
         }
         if (!ok) {
             pr_info("selinux_hide: access deny uid=%d '%s'\n", current_uid().val, kbuf);
