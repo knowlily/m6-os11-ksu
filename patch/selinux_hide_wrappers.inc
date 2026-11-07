@@ -13,6 +13,25 @@
 static void ksu_mark(const char *what, long v); /* 下面到处用，先声明 */
 static int ksu_setprocattr_hook(void); /* 定义在文件后部（依赖 ksu_ctx_allowed） */
 static void ksu_resolve_probe_bits(void); /* 定义在文件后部（依赖 selinuxfs 读取） */
+/* 把 access 响应的原文打到 dmesg（限条数）。用来确认 allowed 的真实值和 seqno 位置。 */
+static void ksu_log_raw(const char *tag, struct file *file, ssize_t rv)
+{
+    static atomic_t left = ATOMIC_INIT(40);
+    char *ar = (char *)file->private_data;
+    char tmp[72];
+    size_t n;
+
+    if (!ar || rv <= 9)
+        return;
+    if (atomic_dec_if_positive(&left) < 0)
+        return;
+    n = (size_t)(rv - (ssize_t)sizeof(ssize_t));
+    if (n > sizeof(tmp) - 1)
+        n = sizeof(tmp) - 1;
+    memcpy(tmp, ar + sizeof(ssize_t), n);
+    tmp[n] = 0;
+    pr_info("selinux_hide: RAW %s = '%s'" "\n", tag, tmp);
+}
 static void ksu_fix_seqno_file(struct file *file, ssize_t rv); /* 定义在 ksu_fix_seqno 之后 */
 
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
@@ -1193,15 +1212,22 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         ksu_diag("acc uid=%d ok=%d pi=%d bit=%d size=%zu", current_uid().val, ok, pi,
                  pi >= 0 ? ksu_pair_sigs[pi].bit : -1, size);
         if (pi >= 0) {
-            /* 干净机上这些规则对本来就是「allowed=0 的合法响应」。不能返回 -EACCES：
-             * DirtySepolicy 的 checkSELinuxAccess 会把非 0 返回当成 ERROR 直接中断。 */
             ssize_t rv2;
+            int pbit = ksu_pair_sigs[pi].bit;
 
-            pr_info("selinux_hide: pair deny uid=%d bit=%d\n", current_uid().val,
-                    ksu_pair_sigs[pi].bit);
+            pr_info("selinux_hide: pair deny uid=%d bit=%d\n", current_uid().val, pbit);
             rv2 = orig->write(file, ubuf, size, ppos);
             if (rv2 > 0) {
-                ksu_zero_allowed(file, rv2);
+                if (pi == 0) {
+                    /* self 对（system_server -> system_server）整字清零会被看出「被抹过」：
+                     * 干净机上它本来就允许一堆权限。只掩掉被探测的那一位。 */
+                    ksu_log_raw("before", file, rv2);
+                    ksu_mask_probe_bit(file, rv2, pbit);
+                    ksu_log_raw("after", file, rv2);
+                } else {
+                    ksu_zero_allowed(file, rv2);
+                }
+                ksu_fix_seqno_file(file, rv2);
                 if (atomic_dec_if_positive(&ksu_res_log_left) >= 0)
                     ksu_log_res(kbuf, file, rv2);
                 kfree(kbuf);
