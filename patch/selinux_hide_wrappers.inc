@@ -13,6 +13,7 @@
 static void ksu_mark(const char *what, long v); /* 下面到处用，先声明 */
 static int ksu_setprocattr_hook(void); /* 定义在文件后部（依赖 ksu_ctx_allowed） */
 static void ksu_resolve_probe_bits(void); /* 定义在文件后部（依赖 selinuxfs 读取） */
+static void ksu_fix_seqno_file(struct file *file, ssize_t rv); /* 定义在 ksu_fix_seqno 之后 */
 
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
@@ -966,6 +967,16 @@ static void ksu_fix_seqno(char *d, ssize_t n)
 }
 
 /* 只清被探测的那一位（保留其它位），再把 seqno 改成 1 */
+/* 只把响应里的 avdSeqNo 改成干净值（不动 allowed 位图）。
+ * DirtySepolicy 的 seqno 检查走的是自检查询（不在规则对表里），所以必须在放行路径上也改。 */
+static void ksu_fix_seqno_file(struct file *file, ssize_t rv)
+{
+    char *ar = (char *)file->private_data;
+
+    if (!ar || rv <= 9)
+        return;
+    ksu_fix_seqno(ar + sizeof(ssize_t), rv - (ssize_t)sizeof(ssize_t));
+}
 static void ksu_mask_probe_bit(struct file *file, ssize_t rv, int bit)
 {
     char *ar = (char *)file->private_data;
@@ -1015,11 +1026,7 @@ static void ksu_zero_allowed(struct file *file, ssize_t rv)
     for (i = 0; i < rv - (ssize_t)sizeof(ssize_t) && d[i] != ' ' && d[i] != '\n'; i++)
         d[i] = '0';
 
-    { /* 第 5 字段 avdSeqNo 也归位 */
-        char *ar2 = (char *)file->private_data;
-        if (ar2)
-            ksu_fix_seqno(ar2 + sizeof(ssize_t), rv - (ssize_t)sizeof(ssize_t));
-    }
+    ksu_fix_seqno_file(file, rv); /* 第 5 字段 avdSeqNo 也归位 */
 }
 /* 命中返回下标（-1 未命中）：调用方据此知道该清哪一位 */
 static int ksu_pair_index(const char *buf, size_t size)
@@ -1207,6 +1214,8 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
         {
             ssize_t rv3 = orig->write(file, ubuf, size, ppos);
 
+            if (rv3 > 0)
+                ksu_fix_seqno_file(file, rv3);
             if (rv3 > 0 && atomic_dec_if_positive(&ksu_res_log_left) >= 0)
                 ksu_log_res(kbuf, file, rv3);
             kfree(kbuf);
