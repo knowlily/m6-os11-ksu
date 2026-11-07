@@ -868,7 +868,9 @@ static struct ksu_pair_sig ksu_pair_sigs[] = {
     {"", "adb_data_file", "dir", "search", 29},                        /* ZygiskNext */
     {"", "apk_data_file", "file", "execute", 15},                      /* LSPosed */
     {"", "dex2oat_exec", "file", "execute_no_trans", 26},              /* Xposed */
-};tatic int ksu_has_sub(const char *buf, size_t size, const char *needle)
+};
+
+static int ksu_has_sub(const char *buf, size_t size, const char *needle)
 {
     size_t n = strlen(needle), i;
 
