@@ -97,7 +97,11 @@ P2（libsepol 离线差集表）/ P3（真快照）。
 
 ## 4. 待办
 
-- [ ] 软重启后跑 DirtySepolicy 验证 P0 是否让三条 found 消失（当前 `do-setprocattr v=0`）
-- [ ] P1：access 响应第 5 字段（avdSeqNo）改成 `1`（<6.10 内核干净机固定值）
+- [x] **P0 真机验收通过（2026-11-07）**：软重启后 DirtySepolicy 2.2 输出
+      `OK: no dirty sepolicy found` / `INFO: sequence=0 policyload=0` —— 与干净机基线一致。
+      dmesg 命中记录：`SETPROCATTR 'u:r:adbroot:s0' ret=4294967274 -> EINVAL`
+      （`4294967274`=`0xFFFFFFEA`，原函数返回低 32 位 -22 未做符号扩展；改写后是规范的 -22）。
+- [ ] P1：access 响应第 5 字段（avdSeqNo）改成 `1` —— 已提交 `cfadc1a786`，**未编译**
+      （当前探测器没抱怨 seqno，等下一版一起验证）
 - [ ] P2：用 libsepol 离线性算出厂策略的 allowed 位图，替掉手写清位
 - [ ] SP7 那台若是别的管理器（SukiSU/Next 等），需按对应 `mgr_pkg` 再编 ko
