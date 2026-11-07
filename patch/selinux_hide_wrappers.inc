@@ -613,6 +613,7 @@ static void ksu_fops_do(void)
         ksu_fops_state = (r1 == 0 || r2 == 0 || r3 == 0) ? 1 : 0;
     }
     /* 策略一旦被注入，status 的 sequence/policyload 就是「被换过」的铁证：给 app 换成出厂值的假页 */
+    ksu_resolve_probe_bits(); /* 读 selinuxfs 拿到每个探针的权限位下标 */
     rs = ksu_status_fake();
     ksu_mark("do-status", rs);
     ksu_mark("do-setprocattr", ksu_setprocattr_hook());
@@ -849,20 +850,24 @@ ssize_t my_write_context_auto(struct file *file, const char __user *ubuf, size_t
 struct ksu_pair_sig {
     const char *scon;
     const char *tcon;
+    const char *cls;  /* 探针所在的类：/sys/fs/selinux/class/<cls>/perms/<perm> 里能读到 bit 下标 */
+    const char *perm; /* **只清这一个权限位**，其余位保留 stock 值 */
+    int bit;          /* 运行时解析；解析失败就用这里烘死的默认值 */
 };
 
-static const struct ksu_pair_sig ksu_pair_sigs[] = {
-    /* 说明：探测器的 scon 经常是「它自己的上下文」（v7 = app_zygote 或 untrusted_app），
-     * 按 scon 匹配会全部漏掉。所以除两条固定的以外，一律只按 tcon 匹配。
-     * 这些 tcon 在正常 app 的查询里几乎不出现（只有检测器会问），副作用可接受。 */
-    {"system_server", "system_server"},   /* process/execmem */
-    {"shell", "su"},                      /* process/transition */
-    {"", "rootfs"},                       /* filesystem/associate —— Magisk */
-    {"", "tmpfs"},                        /* fifo_file/open    —— Magisk */
-    {"", "adb_data_file"},                /* file/read, dir/search —— KernelSU / ZygiskNext */
-    {"", "apk_data_file"},                /* file/execute      —— LSPosed */
-    {"", "dex2oat_exec"},                 /* execute_no_trans  —— Xposed */
-};static int ksu_has_sub(const char *buf, size_t size, const char *needle)
+/* 整字清零在 self 对上会显得「被人抹过」：干净机 system_server->system_server 对
+ * process 类本来就允许一大堆权限。所以只清掉探测器真正在问的那一位。
+ * bit 默认值是本机实测（cat /sys/fs/selinux/class/<cls>/perms/<perm>）得到。 */
+static struct ksu_pair_sig ksu_pair_sigs[] = {
+    {"system_server", "system_server", "process", "execmem", 26},      /* 自检/execmem */
+    {"shell", "su", "process", "transition", 2},                       /* transition */
+    {"", "rootfs", "filesystem", "associate", 7},                      /* Magisk */
+    {"", "tmpfs", "fifo_file", "open", 19},                            /* Magisk */
+    {"", "adb_data_file", "file", "read", 2},                          /* KernelSU */
+    {"", "adb_data_file", "dir", "search", 29},                        /* ZygiskNext */
+    {"", "apk_data_file", "file", "execute", 15},                      /* LSPosed */
+    {"", "dex2oat_exec", "file", "execute_no_trans", 26},              /* Xposed */
+};tatic int ksu_has_sub(const char *buf, size_t size, const char *needle)
 {
     size_t n = strlen(needle), i;
 
@@ -878,6 +883,108 @@ static const struct ksu_pair_sig ksu_pair_sigs[] = {
  * file->private_data 是 simple_transaction_get() 分配的
  *   struct simple_transaction_argresp { ssize_t size; char data[]; };
  * 64 位上 data 从 +8 开始，内容是 "%x %x %x %x %x %x\n"，第一个词就是 allowed。 */
+/* 读 /sys/fs/selinux/class/<cls>/perms/<perm>，内容就是该权限的 bit 下标 */
+static int ksu_perm_bit_read(const char *cls, const char *perm)
+{
+    char path[128];
+    struct file *f;
+    char buf[16];
+    ssize_t n;
+    int v;
+
+    scnprintf(path, sizeof(path), "/sys/fs/selinux/class/%s/perms/%s", cls, perm);
+    f = filp_open(path, O_RDONLY, 0);
+    if (IS_ERR(f))
+        return -1;
+    n = ksu_read_file_all(f, buf, sizeof(buf) - 1);
+    filp_close(f, NULL);
+    if (n <= 0)
+        return -1;
+    buf[n] = 0;
+    if (kstrtoint(buf, 10, &v))
+        return -1;
+    return (v >= 0 && v < 32) ? v : -1;
+}
+
+static void ksu_resolve_probe_bits(void)
+{
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(ksu_pair_sigs); i++) {
+        int b = ksu_perm_bit_read(ksu_pair_sigs[i].cls, ksu_pair_sigs[i].perm);
+
+        if (b >= 0)
+            ksu_pair_sigs[i].bit = b;
+    }
+}
+
+/* 第 5 个字段是 avdSeqNo（响应格式 "%x %x %x %x %u %x"）。6.10 之前干净机固定给 1。 */
+static void ksu_fix_seqno(char *d, ssize_t n)
+{
+    ssize_t i = 0, start[8], end[8];
+    int t = 0;
+
+    while (i < n && t < 8) {
+        while (i < n && (d[i] == ' ' || d[i] == '\n'))
+            i++;
+        start[t] = i;
+        while (i < n && d[i] != ' ' && d[i] != '\n')
+            i++;
+        end[t] = i;
+        t++;
+    }
+    if (t < 5)
+        return;
+    {
+        ssize_t s0 = start[4], e0 = end[4], delta = (e0 - s0) - 1;
+
+        if (delta <= 0)
+            return;
+        d[s0] = '1';
+        memmove(d + s0 + 1, d + e0, (size_t)(n - e0));
+        for (i = n - delta; i < n; i++)
+            d[i] = 0;
+    }
+}
+
+/* 只清被探测的那一位（保留其它位），再把 seqno 改成 1 */
+static void ksu_mask_probe_bit(struct file *file, ssize_t rv, int bit)
+{
+    char *ar = (char *)file->private_data;
+    char *d;
+    ssize_t n, i;
+    unsigned long v = 0;
+    char tmp[20];
+    int w, k;
+
+    if (!ar || rv <= 9)
+        return;
+    d = ar + sizeof(ssize_t);
+    n = rv - (ssize_t)sizeof(ssize_t);
+    if (bit >= 0 && bit < 32) {
+        for (i = 0; i < n && d[i] != ' ' && d[i] != '\n'; i++) {
+            int c = d[i], h;
+
+            if (c >= '0' && c <= '9')
+                h = c - '0';
+            else if (c >= 'a' && c <= 'f')
+                h = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F')
+                h = c - 'A' + 10;
+            else
+                break;
+            v = (v << 4) | (unsigned long)h;
+        }
+        if (i > 0) {
+            w = (int)i;
+            v &= ~(1UL << bit);
+            k = snprintf(tmp, sizeof(tmp), "%0*lx", w, v);
+            if (k > 0)
+                memcpy(d, tmp, (size_t)(k > w ? w : k));
+        }
+    }
+    ksu_fix_seqno(d, n);
+}
 static void ksu_zero_allowed(struct file *file, ssize_t rv)
 {
     char *ar = (char *)file->private_data;
@@ -890,7 +997,8 @@ static void ksu_zero_allowed(struct file *file, ssize_t rv)
     for (i = 0; i < rv - (ssize_t)sizeof(ssize_t) && d[i] != ' ' && d[i] != '\n'; i++)
         d[i] = '0';
 }
-static int ksu_pair_denied(const char *buf, size_t size)
+/* 命中返回下标（-1 未命中）：调用方据此知道该清哪一位 */
+static int ksu_pair_index(const char *buf, size_t size)
 {
     size_t i;
 
@@ -902,9 +1010,9 @@ static int ksu_pair_denied(const char *buf, size_t size)
             continue;
         if (tcon[0] && !ksu_has_sub(buf, size, tcon))
             continue;
-        return 1;
+        return (int)i;
     }
-    return 0;
+    return -1;
 }
 /* 对账日志：把「问了什么 -> 最终返回什么」成对打出来。
  * access 的应答体是 simple_transaction_argresp：ssize_t size + char data[]，
@@ -1020,7 +1128,7 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
 
     {
         char *kbuf;
-        int ok;
+        int ok, pi;
 
         if (size == 0 || size > 4096)
             return -EINVAL;
@@ -1046,13 +1154,15 @@ ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t 
                 pr_info("selinux_hide: ACC uid=%d ok=%d '%s'\n",
                         current_uid().val, ok, kbuf);
         }
-        if (ok && ksu_pair_denied(kbuf, size)) { /* 规则层：照常算，但把 allowed 位图清零 */
+        pi = ok ? ksu_pair_index(kbuf, size) : -1;
+        if (pi >= 0) { /* 规则层：照常算，只按位清掉被探测的那个权限 */
             ssize_t rv2;
+            int pbit = ksu_pair_sigs[pi].bit;
 
-            pr_info("selinux_hide: pair deny uid=%d\n", current_uid().val);
+            pr_info("selinux_hide: pair deny uid=%d bit=%d\n", current_uid().val, pbit);
             rv2 = orig->write(file, ubuf, size, ppos);
             if (rv2 > 0) {
-                ksu_zero_allowed(file, rv2);
+                ksu_mask_probe_bit(file, rv2, pbit);
                 if (atomic_dec_if_positive(&ksu_res_log_left) >= 0)
                     ksu_log_res(kbuf, file, rv2);
                 kfree(kbuf);
