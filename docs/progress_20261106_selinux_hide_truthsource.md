@@ -195,3 +195,46 @@ found LSPosed  = c(lsposed_file)             || b(v8,apk_data_file,file,execute)
 1. 把「最终返回给用户态的值」（rv + 清零后的首词）也打进日志，确认 pair deny 之后它到底收到了什么。
 2. 给 `context` 路径加「放行」日志的同时**按类型白名单兜底**：除调用者自身上下文与出厂策略里确实存在的类型外，全部 EINVAL。
 3. 更彻底的做法：直接 patch `security_compute_av_user` 的返回，让 app 域（uid>=10000）拿到全 0 位图，而不是在 selinuxfs 层做字符串匹配。
+
+---
+
+## 2026-11-07 上午：A / B 两版 ko 已就绪（并行编译）
+
+两条路各出一个独立 APK，装机互斥（二选一），都可以单独回滚。
+
+| 方案 | ko 别名 | md5 | APK |
+|---|---|---|---|
+| A 对账日志 | `finasu145b1` | `4fe045d507b8e2c102d9fbb266ee4dd1` | `dist/M6Shell-9.17-A.apk` |
+| B 严格白名单 | `finasu145b2` | `1131f4b3ddb6ebda6c7984d95b10c1b5` | `dist/M6Shell-9.18-B.apk` |
+
+### A（诊断用，不改行为）
+
+新增 `ksu_log_res()`，每条 selinuxfs 请求打一对：
+
+```
+selinux_hide: RES rv=<长度> q='<请求原文>' a='<应答首词>'
+selinux_hide: ACC uid=.. ok=.. '<请求原文>'
+selinux_hide: pair deny uid=..
+```
+
+`a='0'` = 位图已清零（对方判 not allowed）；`a='1'` = 真的放行了。
+上限 300 条，覆盖 pair deny 之后 / 正常放行两条路径；类型层拒绝走 EINVAL 不产生 RES。
+**用途**：把「问了什么 → 最后收到什么」对齐，一次跑完就能定位 DirtySepolicy 到底从哪条拿到 true。
+
+### B（行为实验，可能误伤）
+
+`ksu_pair_denied()` 换成严格白名单，不再枚举 tcon：
+
+```
+放行条件（两条，都是干净机本来就 allowed 的通道自检）：
+  1) scon 是应用自身域（app_zygote / untrusted_app / isolated_app）且 tcon 含 kernel
+  2) scon == tcon（同一应用域，process/setcurrent）
+其余一律：照常调 stock，然后把 allowed 位图清零。
+```
+
+风险：应用域对 selinuxfs 的其他 AV 查询会全部拿到 0，若有正经 App 依赖这个接口会受影响。
+急救：`/data/local/tmp/.w9/hide_off`（注意：shell 建的 0666 文件内核侧可能看不到，见上文）。
+
+### 测试顺序建议
+
+先 A 拿数据（不改行为、无风险），看完 RES 行再决定 B 要不要上。
