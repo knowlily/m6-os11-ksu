@@ -957,12 +957,16 @@ static void ksu_fix_seqno(char *d, ssize_t n)
     {
         ssize_t s0 = start[4], e0 = end[4], delta = (e0 - s0) - 1;
 
-        if (delta <= 0)
+        /* 注意：seqno 是一位数（如 5）时长度不变，delta=0 —— 这种情况必须直接覆盖，
+         * 不能当成「不需要改」。只有原本就是 1 才跳过。 */
+        if (e0 - s0 == 1 && d[s0] == '1')
             return;
         d[s0] = '1';
-        memmove(d + s0 + 1, d + e0, (size_t)(n - e0));
-        for (i = n - delta; i < n; i++)
-            d[i] = 0;
+        if (delta > 0) {
+            memmove(d + s0 + 1, d + e0, (size_t)(n - e0));
+            for (i = n - delta; i < n; i++)
+                d[i] = 0;
+        }
     }
 }
 
