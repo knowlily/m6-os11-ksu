@@ -878,38 +878,6 @@ static const struct ksu_pair_sig ksu_pair_sigs[] = {
  * file->private_data 是 simple_transaction_get() 分配的
  *   struct simple_transaction_argresp { ssize_t size; char data[]; };
  * 64 位上 data 从 +8 开始，内容是 "%x %x %x %x %x %x\n"，第一个词就是 allowed。 */
-/* 第 5 个字段是 avdSeqNo（响应格式 "%x %x %x %x %u %x"）。
- * 6.10 之前的内核上干净机固定给 1；只清 allowed 而留着 live 的 seqno，
- * 检测器仍可能据此判「策略被 reload 过」。这里把它改写成 1 并把多出来的字符左移掉，
- * 保持「单个空格分隔」的形状不变（不要用空格填充，Java split 会得到空 token）。 */
-static void ksu_fix_seqno(char *d, ssize_t n)
-{
-    ssize_t i = 0, start[8], end[8];
-    int t = 0;
-
-    while (i < n && t < 8) {
-        while (i < n && (d[i] == ' ' || d[i] == '\n'))
-            i++;
-        start[t] = i;
-        while (i < n && d[i] != ' ' && d[i] != '\n')
-            i++;
-        end[t] = i;
-        t++;
-    }
-    if (t < 5)
-        return;
-    {
-        ssize_t s0 = start[4], e0 = end[4];
-        ssize_t delta = (e0 - s0) - 1;
-
-        if (delta <= 0)
-            return; /* 本来就是一个字符（多半已经是 1） */
-        d[s0] = '1';
-        memmove(d + s0 + 1, d + e0, (size_t)(n - e0));
-        for (i = n - delta; i < n; i++)
-            d[i] = 0;
-    }
-}
 static void ksu_zero_allowed(struct file *file, ssize_t rv)
 {
     char *ar = (char *)file->private_data;
@@ -921,7 +889,6 @@ static void ksu_zero_allowed(struct file *file, ssize_t rv)
     d = ar + sizeof(ssize_t);
     for (i = 0; i < rv - (ssize_t)sizeof(ssize_t) && d[i] != ' ' && d[i] != '\n'; i++)
         d[i] = '0';
-    ksu_fix_seqno(d, rv - (ssize_t)sizeof(ssize_t));
 }
 static int ksu_pair_denied(const char *buf, size_t size)
 {
