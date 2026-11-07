@@ -8,8 +8,10 @@
 #include <linux/delay.h>
 #include <linux/vmalloc.h>
 #include <linux/mm_types.h>
+#include <linux/kprobes.h>
 
 static void ksu_mark(const char *what, long v); /* 下面到处用，先声明 */
+static int ksu_setprocattr_hook(void); /* 定义在文件后部（依赖 ksu_ctx_allowed） */
 
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
@@ -613,6 +615,7 @@ static void ksu_fops_do(void)
     /* 策略一旦被注入，status 的 sequence/policyload 就是「被换过」的铁证：给 app 换成出厂值的假页 */
     rs = ksu_status_fake();
     ksu_mark("do-status", rs);
+    ksu_mark("do-setprocattr", ksu_setprocattr_hook());
     ksu_mark("do-done", ksu_fops_state);
     pr_info("selinux_hide: fops do ctx=%d acc=%d stock=%d status=%d state=%d\n", r1, r2, rp, rs,
             ksu_fops_state);
@@ -927,6 +930,83 @@ static void ksu_log_res(const char *q, struct file *file, ssize_t rv)
     }
     first[i] = 0;
     pr_info("selinux_hide: RES rv=%zd q='%s' a='%s'\n", rv, q, first);
+}
+/* ------------------------------------------------------------------
+ * P0：补上 contextExists 的第三条腿（DirtySepolicy 三条 found 的真正来源）
+ *
+ *   它判「某个 context 存在」有三个入口，前两个我们早就拦了：
+ *     1) 写 /sys/fs/selinux/context -> EINVAL = 不存在
+ *     2) 写 /sys/fs/selinux/access  -> EINVAL = 不存在
+ *     3) 写 /proc/self/attr/current -> **EPERM = 存在**（!）
+ *
+ *   第三条走 selinux_setprocattr，从来没被接管，于是 u:r:su:s0 /
+ *   u:object_r:ksu_file:s0 / u:object_r:lsposed_file:s0 全从这里漏出去。
+ *
+ *   不能改 .rodata 里的 proc_pid_attr_operations（本机 set_memory_rw 对镜像
+ *   地址返回 -22），所以用 kretprobe：函数照常执行，只在返回前把「出厂策略里
+ *   没有的类型」改写成 -EINVAL —— 跟干净机一个字都不差。
+ * ------------------------------------------------------------------ */
+static struct kretprobe ksu_sp_krp;
+static int ksu_sp_installed;
+
+static int ksu_sp_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    unsigned long *slot = (unsigned long *)ri->data;
+
+    /* int selinux_setprocattr(const char *name, void *value, size_t size) */
+    slot[0] = regs->regs[1]; /* value */
+    slot[1] = regs->regs[2]; /* size  */
+    return 0;
+}
+
+static int ksu_sp_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    unsigned long *slot = (unsigned long *)ri->data;
+    const char *v = (const char *)slot[0];
+    size_t n = (size_t)slot[1];
+    char buf[256];
+    size_t len;
+    long ret;
+
+    if (likely(current_uid().val < 10000))
+        return 0;
+    if (!v || n < 8 || n >= sizeof(buf))
+        return 0;
+    len = strnlen(v, n);
+    if (len < 8 || len >= sizeof(buf))
+        return 0;
+    memcpy(buf, v, len);
+    buf[len] = 0;
+    if (ksu_ctx_allowed(buf, len))
+        return 0; /* 出厂策略里有的类型：原样交回去 */
+    ret = (long)regs_return_value(regs);
+    if (ret == -EINVAL)
+        return 0; /* 已经是干净机的答案 */
+    pr_info("selinux_hide: SETPROCATTR '%s' ret=%ld -> EINVAL\n", buf, ret);
+    regs_set_return_value(regs, -EINVAL);
+    return 0;
+}
+
+static int ksu_setprocattr_hook(void)
+{
+    int r;
+
+    if (ksu_sp_installed)
+        return 0;
+    memset(&ksu_sp_krp, 0, sizeof(ksu_sp_krp));
+    ksu_sp_krp.kp.symbol_name = "selinux_setprocattr";
+    ksu_sp_krp.entry_handler = ksu_sp_entry;
+    ksu_sp_krp.handler = ksu_sp_ret;
+    ksu_sp_krp.data_size = 2 * sizeof(unsigned long);
+    ksu_sp_krp.maxactive = 64;
+    r = register_kretprobe(&ksu_sp_krp);
+    if (r) {
+        pr_info("selinux_hide: kretprobe selinux_setprocattr FAILED %d\n", r);
+        return r;
+    }
+    ksu_sp_installed = 1;
+    pr_info("selinux_hide: kretprobe selinux_setprocattr OK\n");
+    return 0;
 }
 ssize_t my_write_access_auto(struct file *file, const char __user *ubuf, size_t size, loff_t *ppos)
 {
