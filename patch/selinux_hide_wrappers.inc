@@ -12,6 +12,7 @@
 
 static void ksu_mark(const char *what, long v); /* 下面到处用，先声明 */
 static int ksu_setprocattr_hook(void); /* 定义在文件后部（依赖 ksu_ctx_allowed） */
+static void ksu_resolve_probe_bits(void); /* 定义在文件后部（依赖 selinuxfs 读取） */
 
 /* ===== DIRECTSTORE: 4/3 参数自适应包装 =====
  * 本内核里 write_op[] 的调用方可能给内核缓冲区（老式 selinuxfs），
